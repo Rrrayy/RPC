@@ -30,12 +30,12 @@ std::string RpcConfig::Load(const std::string &key){
 }
 
 void RpcConfig::Trim(std::string &read_buf){
-    int index = read_buf.find_first_not_of(' ');
+    int index = read_buf.find_first_not_of(" \n");
     if(index != -1){
-        read_buf = read_buf.substr(index ,read_buf.size() - index);
+        read_buf = read_buf.substr(index, read_buf.size() - index);
     }
-    index = read_buf.find_last_not_of(' ');
+    index = read_buf.find_last_not_of(" \n");
     if(index != -1){
-        read_buf = read_buf.substr(0,index+1);
+        read_buf = read_buf.substr(0, index + 1);
     }
 }
