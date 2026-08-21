@@ -31,7 +31,7 @@ public:
     }
 private:
     RpcLogger(const RpcLogger&) = delete;
-    RpcConfig operator=(const RpcLogger&) = delete;
+    RpcLogger& operator=(const RpcLogger&) = delete;
 };
 
 #endif

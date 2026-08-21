@@ -18,7 +18,7 @@ set(LIBS
     glog
     zookeeper_mt
 )
-
+set(CMAKE_CXX_FLAGS_RELEASE "-O2")
 # 框架核心库：GLOB 收集 src 下所有 .cc 和 .pb.cc
 file(GLOB RPC_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cc)
 file(GLOB PROTO_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.pb.cc)
@@ -37,3 +37,7 @@ target_link_libraries(config_test rpc_core)
 # RPC 服务端
 add_executable(server example/callee/server.cc example/user.pb.cc)
 target_link_libraries(server rpc_core)
+
+# RPC 客户端
+add_executable(client example/caller/client.cc example/user.pb.cc)
+target_link_libraries(client rpc_core)
