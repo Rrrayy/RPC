@@ -31,3 +31,13 @@ private:
 
 };
 #endif
+
+// RpcProvider
+// ├── event_loop       主事件循环
+// ├── m_thread_pool    业务线程池
+// ├── service_map      服务名 → ServiceInfo
+// │   ├── service      业务服务对象
+// │   └── method_map   方法名 → MethodDescriptor
+// ├── OnConnection     连接回调
+// ├── OnMessage        消息回调
+// └── SendRpcResponse  响应发送
