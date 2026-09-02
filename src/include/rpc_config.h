@@ -1,5 +1,5 @@
-#ifndef _RpcConfig_h
-#define _RpcConfig_h
+#ifndef RPC_RpcConfig_h
+#define RPC_RpcConfig_h
 #include<unordered_map>
 #include<string>
 
