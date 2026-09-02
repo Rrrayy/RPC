@@ -15,7 +15,7 @@ public:
     bool Login(std::string username, std::string password)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        return true;
+        return !username.empty()&&!password.empty();
     }
 
     void login(::google::protobuf::RpcController *controller,
@@ -23,15 +23,26 @@ public:
                 ::fixbug::LoginResponse *response,
                 ::google::protobuf::Closure *done)
     {
-        std::string username = request->username();
+    	if(request==nullptr	|| response==nullptr){
+			if(controller!=nullptr)
+				controller->SetFailed("Invalid rpc argument");
+			return;
+		}
+		std::string username = request->username();
         std::string password = request->password();
 
         bool login_result = Login(username, password);
 
-        response->set_errcode(0);
-        response->set_msg("login success");
-
-        done->Run();
+		if(login_result){
+			response->set_errcode(0);
+			response->set_msg("login success");
+		}
+		else{
+			response->set_errcode(1);
+			response->set_msg("login failed");
+		}
+		if(done!=nullptr)
+        	done->Run();
     }
 };
 
