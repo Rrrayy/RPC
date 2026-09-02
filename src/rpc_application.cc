@@ -10,26 +10,29 @@ RpcApplication *RpcApplication::m_application = nullptr;
 //解析命令行并取到配置文件 移交给config解析 
 void RpcApplication::Init(int argc , char** argv){
     if(argc < 2){
-        std::cout<< "格式: command -i <配置文件路径> "<<std::endl;
+        std::cout<< "格式: command -i <配置文件路径>"<<std::endl;
         exit(EXIT_FAILURE);
     }
     int o;
     std::string config_file;
-    while(-1 != (o = getopt(argc , argv , "i:"))){
+    while(-1 != (o = getopt(argc , argv , ":i:"))){
         switch(o){
             case 'i':
                 config_file = optarg;
                 break;
             case '?':
             case ':':
-                std::cout<<"格式: command -i <配置文件路径>  "<<std::endl;
+                std::cout<<"格式: command -i <配置文件路径> "<<std::endl;
                 exit(EXIT_FAILURE);
                 break;
             default:
                 break;
         }
     }
-
+	if(config_file.empty()){
+		std::cout<<"缺少配置文件路径"<<std::endl;
+		exit(EXIT_FAILURE);
+	}
     m_config.LoadConfigFile(config_file.c_str());
 }
 
@@ -37,7 +40,7 @@ RpcApplication &RpcApplication::GetInstance(){
     std::lock_guard<std::mutex> lock(m_mutex);
     if(m_application == nullptr){
         m_application = new RpcApplication();
-        //程序退出自动销毁  raii
+        //程序退出自动销毁
         atexit(deleteInstance);
     }
     return *m_application;
