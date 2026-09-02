@@ -1,115 +1,384 @@
 #include "rpc_channel.h"
-#include "rpc_header.pb.h"
-#include "rpc_application.h"
-#include "rpc_controller.h"
-#include <errno.h>
-#include <sys/socket.h>
-#include <sys/types.h>
+
 #include <arpa/inet.h>
-#include "rpc_logger.h"
+#include <cerrno>
+#include <cstdint>
+#include <cstring>
+#include <exception>
+#include <mutex>
+#include <string>
+#include <sys/socket.h>
+#include <utility>
+#include <vector>
+#include <atomic>
+#include "rpc_application.h"
 #include "rpc_connect_pool.h"
+#include "rpc_header.pb.h"
+#include "rpc_logger.h"
 
-static std::atomic<uint64_t> g_req_id{0};
+namespace{
+	std::atomic<std::uint64_t> request_id{0};
 
-ssize_t RpcChannel::recv_exact(int fd, char *buf, size_t size) {
-    size_t total_read = 0;
-    while (total_read < size) {
-        ssize_t ret = recv(fd, buf + total_read, size - total_read, 0);
-        if (ret == 0) return 0; 
-        if (ret == -1) {
-            if (errno == EINTR) continue; 
-            return -1; 
-        }
-        total_read += ret;
-    }
-    return total_read;
+	constexpr std::uint32_t max_message_length=4*1024*1024;
 }
 
-void RpcChannel::CallMethod(const ::google::protobuf::MethodDescriptor *method,
-                             ::google::protobuf::RpcController *controller,
-                             const ::google::protobuf::Message *request,
-                             ::google::protobuf::Message *response,
-                             ::google::protobuf::Closure *done)
+RpcChannel::RpcChannel(bool connect_now){
+	(void)connect_now;
+}
+
+RpcChannel::~RpcChannel()=default;
+
+ssize_t RpcChannel::send_exact(
+	int file_descriptor,
+	const char* buffer,
+	std::size_t size)
 {
-    std::string service_name = method->service()->name();    
-    std::string method_name = method->name(); 
+	std::size_t total_sent=0;
 
-    static std::once_flag init_flag;
-    std::call_once(init_flag, []() { ServiceDiscovery::GetInstance().Init(); });
+	while(total_sent<size){
+		ssize_t sent=::send(
+			file_descriptor,
+			buffer+total_sent,
+			size-total_sent,
+			MSG_NOSIGNAL
+		);
 
-   
-    uint64_t req_id = g_req_id.fetch_add(1, std::memory_order_relaxed);
-    std::string route_key = std::to_string(req_id);
+		if(sent<0){
+			if(errno==EINTR){
+				continue;
+			}
 
-    std::string ip_port = ServiceDiscovery::GetInstance().GetTargetNode(service_name, route_key);
-    if (ip_port.empty()) {
-        controller->SetFailed("Hash ring returned empty node!");
-        return;
-    }
-    
-    size_t pos = ip_port.find(":");
-    std::string target_ip = ip_port.substr(0, pos);
-    uint16_t target_port = atoi(ip_port.substr(pos + 1).c_str());
+			return -1;
+		}
 
-  
-    int clientfd = RpcConnectPool::GetInstance().BorrowConnection(target_ip, target_port);
-    if (clientfd == -1) {
-        controller->SetFailed("Borrow connection from pool failed!");
-        return;
-    }
+		if(sent==0){
+			return -1;
+		}
 
-    bool is_bad = false; 
-    std::string args_str;
-    
-    if (!request->SerializeToString(&args_str)) {
-        controller->SetFailed("Serialize request fail");
-        is_bad = true; 
-    } else {
-        rpc::RpcHeader  rpcheader;
-            rpcheader.set_service_name(service_name);
-            rpcheader.set_method_name(method_name);
-            rpcheader.set_args_size(args_str.size());
+		total_sent+=static_cast<std::size_t>(sent);
+	}
 
-        std::string rpc_header_str;
-            rpcheader.SerializeToString(&rpc_header_str);
+	return static_cast<ssize_t>(total_sent);
+}
 
-        uint32_t header_size = rpc_header_str.size();
-        uint32_t total_len = 4 + header_size + args_str.size();
-        uint32_t net_total_len = htonl(total_len);
-        uint32_t net_header_len = htonl(header_size);
+ssize_t RpcChannel::recv_exact(
+	int file_descriptor,
+	char* buffer,
+	std::size_t size)
+{
+	std::size_t total_read=0;
 
-        std::string send_rpc_str;
-        send_rpc_str.reserve(4 + 4 + header_size + args_str.size());
-        send_rpc_str.append((char *)&net_total_len, 4);
-        send_rpc_str.append((char *)&net_header_len, 4);
-        send_rpc_str.append(rpc_header_str);
-        send_rpc_str.append(args_str);
+	while(total_read<size){
+		ssize_t received=::recv(
+			file_descriptor,
+			buffer+total_read,
+			size-total_read,
+			0
+		);
 
-       
-        if (send(clientfd, send_rpc_str.c_str(), send_rpc_str.size(), MSG_NOSIGNAL) == -1) {
-            controller->SetFailed("Send rpc request error!");
-            is_bad = true;
-        } else {
-            uint32_t response_len = 0;
-            if (recv_exact(clientfd, (char *)&response_len, 4) != 4) {
-                controller->SetFailed("Recv response header error!");
-                is_bad = true;
-            } else {
-                response_len = ntohl(response_len);
-                std::vector<char> recv_buf(response_len);
-                if (recv_exact(clientfd, recv_buf.data(), response_len) != (ssize_t)response_len) {
-                    controller->SetFailed("Recv response body error!");
-                    is_bad = true;
-                } else {
-                    if (!response->ParseFromArray(recv_buf.data(), response_len)) {
-                        controller->SetFailed("Parse response error!");
-                        is_bad = true;
-                    }
-                }
-            }
-        }
-    }
+		if(received==0){
+			return 0;
+		}
 
- 
-    RpcConnectPool::GetInstance().ReturnConnection(target_ip, target_port, clientfd, is_bad);
+		if(received<0){
+			if(errno==EINTR){
+				continue;
+			}
+
+			return -1;
+		}
+
+		total_read+=static_cast<std::size_t>(received);
+	}
+
+	return static_cast<ssize_t>(total_read);
+}
+
+void RpcChannel::CallMethod(
+	const google::protobuf::MethodDescriptor* method,
+	google::protobuf::RpcController* controller,
+	const google::protobuf::Message* request,
+	google::protobuf::Message* response,
+	google::protobuf::Closure* done)
+{
+	auto set_failed=[controller](const std::string& reason){
+		if(controller!=nullptr){
+			controller->SetFailed(reason);
+		}
+	};
+
+	if(method==nullptr||request==nullptr||response==nullptr){
+		set_failed("invalid rpc argument");
+
+		if(done!=nullptr){
+			done->Run();
+		}
+
+		return;
+	}
+
+	const google::protobuf::ServiceDescriptor* service_descriptor=
+		method->service();
+
+	if(service_descriptor==nullptr){
+		set_failed("invalid service descriptor");
+
+		if(done!=nullptr){
+			done->Run();
+		}
+
+		return;
+	}
+
+	std::string service_name=service_descriptor->name();
+	std::string method_name=method->name();
+
+	static std::once_flag init_flag;
+
+	std::call_once(
+		init_flag,
+		[](){
+			ServiceDiscovery::GetInstance().Init();
+		}
+	);
+
+	std::uint64_t current_request_id=
+		request_id.fetch_add(
+			1,
+			std::memory_order_relaxed
+		);
+
+	std::string route_key=std::to_string(current_request_id);
+
+	std::string ip_port=
+		ServiceDiscovery::GetInstance().GetTargetNode(
+			service_name,
+			route_key
+		);
+
+	if(ip_port.empty()){
+		set_failed("hash ring returned empty node");
+
+		if(done!=nullptr){
+			done->Run();
+		}
+
+		return;
+	}
+
+	std::size_t separator_position=ip_port.rfind(':');
+
+	if(
+		separator_position==std::string::npos||
+		separator_position==0||
+		separator_position+1>=ip_port.size()
+	){
+		set_failed("invalid service address");
+
+		if(done!=nullptr){
+			done->Run();
+		}
+
+		return;
+	}
+
+	int port=0;
+
+	try{
+		port=std::stoi(
+			ip_port.substr(separator_position+1)
+		);
+	}catch(const std::exception& error){
+		(void)error;
+		set_failed("invalid service port");
+
+		if(done!=nullptr){
+			done->Run();
+		}
+
+		return;
+	}
+
+	if(port<=0||port>65535){
+		set_failed("service port out of range");
+
+		if(done!=nullptr){
+			done->Run();
+		}
+
+		return;
+	}
+
+	std::string target_ip=
+		ip_port.substr(0,separator_position);
+
+	std::uint16_t target_port=
+		static_cast<std::uint16_t>(port);
+
+	int client_fd=
+		RpcConnectPool::GetInstance().BorrowConnection(
+			target_ip,
+			target_port
+		);
+
+	if(client_fd==-1){
+		set_failed("borrow connection from pool failed");
+
+		if(done!=nullptr){
+			done->Run();
+		}
+
+		return;
+	}
+
+	bool is_bad=false;
+	std::string argument_string;
+	std::string send_buffer;
+
+	if(!request->SerializeToString(&argument_string)){
+		set_failed("serialize request failed");
+		is_bad=true;
+	}else if(argument_string.size()>max_message_length){
+		set_failed("request body too large");
+		is_bad=true;
+	}else{
+		rpc::RpcHeader rpc_header;
+
+		rpc_header.set_service_name(service_name);
+		rpc_header.set_method_name(method_name);
+		rpc_header.set_args_size(
+			static_cast<std::uint32_t>(argument_string.size())
+		);
+
+		std::string header_string;
+
+		if(!rpc_header.SerializeToString(&header_string)){
+			set_failed("serialize rpc header failed");
+			is_bad=true;
+		}else if(header_string.size()>max_message_length){
+			set_failed("rpc header too large");
+			is_bad=true;
+		}else{
+			std::size_t total_length=
+				sizeof(std::uint32_t)+
+				header_string.size()+
+				argument_string.size();
+
+			if(total_length>max_message_length||
+				total_length>UINT32_MAX){
+				set_failed("rpc request too large");
+				is_bad=true;
+			}else{
+				std::uint32_t network_total_length=
+					htonl(
+						static_cast<std::uint32_t>(
+							total_length
+						)
+					);
+
+				std::uint32_t network_header_length=
+					htonl(
+						static_cast<std::uint32_t>(
+							header_string.size()
+						)
+					);
+
+				send_buffer.reserve(
+					sizeof(std::uint32_t)+
+					total_length
+				);
+
+				send_buffer.append(
+					reinterpret_cast<const char*>(
+						&network_total_length
+					),
+					sizeof(network_total_length)
+				);
+
+				send_buffer.append(
+					reinterpret_cast<const char*>(
+						&network_header_length
+					),
+					sizeof(network_header_length)
+				);
+
+				send_buffer.append(header_string);
+				send_buffer.append(argument_string);
+
+				if(
+					send_exact(
+						client_fd,
+						send_buffer.data(),
+						send_buffer.size()
+					)<0
+				){
+					set_failed("send rpc request failed");
+					is_bad=true;
+				}
+			}
+		}
+	}
+
+	if(!is_bad){
+		std::uint32_t network_response_length=0;
+
+		if(
+			recv_exact(
+				client_fd,
+				reinterpret_cast<char*>(
+					&network_response_length
+				),
+				sizeof(network_response_length)
+			)!=static_cast<ssize_t>(
+				sizeof(network_response_length)
+			)
+		){
+			set_failed("receive response header failed");
+			is_bad=true;
+		}else{
+			std::uint32_t response_length=
+				ntohl(network_response_length);
+
+			if(response_length>max_message_length){
+				set_failed("response body too large");
+				is_bad=true;
+			}else{
+				std::vector<char> response_buffer(
+					response_length
+				);
+
+				if(
+					recv_exact(
+						client_fd,
+						response_buffer.data(),
+						response_length
+					)!=static_cast<ssize_t>(
+						response_length
+					)
+				){
+					set_failed("receive response body failed");
+					is_bad=true;
+				}else if(
+					!response->ParseFromArray(
+						response_buffer.data(),
+						static_cast<int>(response_length)
+					)
+				){
+					set_failed("parse response failed");
+					is_bad=true;
+				}
+			}
+		}
+	}
+
+	RpcConnectPool::GetInstance().ReturnConnection(
+		target_ip,
+		target_port,
+		client_fd,
+		is_bad
+	);
+
+	if(done!=nullptr){
+		done->Run();
+	}
 }
