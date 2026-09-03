@@ -1,6 +1,7 @@
 #include "zookeeperutil.h"
 #include "rpc_application.h"     
 #include <mutex>
+#include <chrono>
 #include "rpc_logger.h"           
 #include <condition_variable>
 
@@ -30,7 +31,10 @@ void ZkClient::Start() {
     std::string host = RpcApplication::GetInstance().GetConfig().Load("zookeeperip");
     std::string port = RpcApplication::GetInstance().GetConfig().Load("zookeeperport");
     std::string connstr = host + ":" + port;
-
+	{
+	std::lock_guard<std::mutex> lock(cv_mutex);
+	is_connected=false;
+	}
     m_zhandle = zookeeper_init(connstr.c_str(), global_watcher, 6000, nullptr, nullptr, 0);
     if (nullptr == m_zhandle) {
         LOG(ERROR) << "zookeeper_init error";
@@ -38,7 +42,13 @@ void ZkClient::Start() {
     }
 
     std::unique_lock<std::mutex> lock(cv_mutex);
-    cv.wait(lock, [] { return is_connected; });
+    bool connected=cv.wait_for(lock,std::chrono::seconds(10),[]{return is_connected;});
+	if(!connected){
+		LOG(ERROR)<<"connect to zookeeper timed out";
+		zookeeper_close(m_zhandle);
+		m_zhandle=nullptr;
+		std::exit(EXIT_FAILURE);
+	}
     LOG(INFO) << "zookeeper_init success";
 }
 
@@ -51,7 +61,9 @@ void ZkClient::Create(const char *path, const char *data, int datalen, int state
         flag = zoo_create(m_zhandle, path, data, datalen, &ZOO_OPEN_ACL_UNSAFE, state, path_buffer, bufferlen);
         if (flag == ZOK) {
             LOG(INFO) << "znode create success... path:" << path;
-        } else {
+        }else if(flag==ZNODEEXISTS){
+			LOG(INFO)<<"znode already exists path: "<<path;
+		} else {
             LOG(ERROR) << "znode create failed... path:" << path;
             exit(EXIT_FAILURE);
         }
@@ -67,7 +79,7 @@ std::string ZkClient::GetData(const char *path) {
         LOG(ERROR) << "zoo_get error";
         return "";
     }
-    return buf;
+    return std::string(buf,static_cast<std::size_t>(bufferlen));
 }
 
 std::vector<std::string> ZkClient::GetChildren(const char* path, watcher_fn fn, void* cbContext) {
