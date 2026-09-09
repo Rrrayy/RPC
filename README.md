@@ -1,99 +1,147 @@
-# RPC — 基于 muduo 的轻量级 RPC 框架
+# RPC Framework
 
-C++17 实现的高性能 RPC 框架：Protobuf 序列化 + 自定义二进制协议 + muduo 多 Reactor 网络层 + Zookeeper 服务注册与发现 + 一致性哈希负载均衡 + 无锁连接池。
+基于 C++17、muduo、Protobuf 和 Zookeeper 实现的轻量级 RPC 框架，覆盖客户端调用、协议编解码、服务端分发、服务注册发现、负载均衡和容器化部署。
 
-## 性能
+## Features
 
-| 指标 | 数据 |
-|------|------|
-| 总请求 | 100,000 次 |
-| 成功率 | 100%（0 失败） |
-| QPS | 6,700+（单机 Debug，含模拟业务耗时 5ms/请求） |
+- 自定义二进制协议，支持 TCP 粘包与半包处理
+- Protobuf 序列化、反射分发与 Stub 生成
+- 基于 muduo 的 Reactor 网络模型
+- IO 线程与业务线程池解耦
+- Zookeeper 服务注册、发现与实例变更监听
+- 一致性哈希服务实例选择
+- TCP 长连接池与连接预热
+- Docker Compose 编排 Zookeeper、RPC Server 和 RPC Client
 
-## 架构
+## Architecture
 
+```text
+Client
+  └─ Stub
+      └─ Service Discovery
+          └─ Connection Pool
+              └─ Serialize and Send
+                  └─ TCP
+                      └─ RPC Server
+                          ├─ Receive and Decode
+                          ├─ Method Dispatch
+                          ├─ Business Thread Pool
+                          └─ Response Callback
+
+Zookeeper: service registration and discovery
 ```
-客户端
-  Kclient -> Stub（代理）-> RpcChannel::CallMethod
-    1. ServiceDiscovery：ZK 拉实例 + 一致性哈希选节点
-    2. ConnectPool：无锁队列借长连接
-    3. 组包 [total_len|header_len|RpcHeader|args] -> send
-    4. recv_exact 收 [len|body] -> 解析 -> 还连接
-服务端
-  RpcProvider：muduo（1 main loop + 4 IO 线程）
-    1. OnMessage：while 拆包 -> 双层查表 -> 反射 New()
-    2. 业务线程池（100 线程）执行 CallMethod
-    3. done 闭包回调 -> SendRpcResponse 跨线程回包
-    4. 启动时注册 ZK：持久节点 + 临时实例节点
-注册中心：Zookeeper（服务注册 / Watcher 动态感知）
+
+一次调用的主要流程：客户端通过 Stub 发起调用，服务发现模块选择实例，连接池提供长连接，请求经过序列化和协议组包后发送到服务端。服务端网络线程负责接收和拆包，业务线程池完成反序列化与业务执行，最后通过回调返回响应。
+
+## Protocol
+
+```text
++----------------+----------------+----------------+----------------+
+| total_len (4B) | header_len(4B) | RpcHeader      | args           |
++----------------+----------------+----------------+----------------+
 ```
 
-## 技术栈
+- `total_len`：协议头之后的完整消息长度
+- `header_len`：序列化后的 RPC 元数据长度
+- `RpcHeader`：服务名、方法名、参数长度等元数据
+- `args`：Protobuf 序列化后的业务参数
 
-- C++17（智能指针 / 线程池 / 原子操作 / 读写锁）
-- Protobuf（消息序列化 + 反射 + stub 生成）
-- muduo（Reactor 网络库，多线程事件循环）
-- Zookeeper（服务注册与发现）
-- glog（日志系统，RAII 封装）
-- CMake（工程化构建）
+服务端根据长度字段循环拆包。数据不完整时保留缓冲区并等待下一次读取，完整解析后继续处理同一缓冲区中的后续请求。
 
-## 核心特性
+## Service Discovery and Load Balancing
 
-1. 自定义二进制协议：`[total_len(4B) | header_len(4B) | RpcHeader | args]` 定长头拆包，解决 TCP 粘包/半包
-2. Protobuf 反射分发：服务注册表 + `GetRequestPrototype().New()` 原型创建 + `CallMethod` 虚函数分发——框架不认识业务类也能调用
-3. IO 与业务解耦：muduo IO 线程只管收发拆包，业务逻辑丢 100 线程池执行，done 闭包回调跨线程回包
-4. ZK 服务注册发现：持久节点存服务路径、临时节点（ZOO_EPHEMERAL）存实例地址，进程断线自动摘除；Watcher 监听实例变化动态更新
-5. 一致性哈希负载均衡：虚拟节点 + 有序哈希环 + 二分查找，增删节点只影响局部；后台线程检测负载偏差动态调参
-6. 无锁连接池：MPMC 无锁环形队列（CAS 序列号法，防伪共享）管理长连接，预热 100 条，借还 O(1) 零锁竞争
+服务端向 Zookeeper 注册服务路径和实例地址。实例地址使用临时节点保存，进程退出或会话断开后由 Zookeeper 自动清理。客户端通过 Watcher 感知实例列表变化，并使用一致性哈希选择服务节点。
 
-## 目录结构
+一致性哈希采用虚拟节点和有序哈希环，节点变化时只影响局部 key 的映射，减少路由迁移范围。
 
-```
+## Technology Stack
+
+| Component | Purpose |
+| --- | --- |
+| C++17 | Framework implementation |
+| muduo | Reactor network layer |
+| Protobuf | Serialization, reflection and Stub generation |
+| Zookeeper | Service registration and discovery |
+| glog | Logging |
+| CMake | Build system |
+| Docker Compose | Container orchestration |
+
+## Project Structure
+
+```text
 rpc/
 ├── src/
-│   ├── include/          # 头文件（框架全部组件）
-│   │   ├── rpc_provider.h        # 服务端：注册/启动/拆包/反射分发/回包
-│   │   ├── rpc_channel.h         # 客户端：CallMethod 组包/收发
-│   │   ├── service_discovery.h   # 服务发现：ZK 拉实例 + Watcher
-│   │   ├── consistent_hash.h     # 一致性哈希 + 负载均衡
-│   │   ├── rpc_connect_pool.h    # 无锁连接池
-│   │   ├── LockFreeQueue.h       # MPMC 无锁队列（模板）
-│   │   ├── rpc_controller.h      # RPC 调用状态控制器
-│   │   ├── zookeeperutil.h       # ZK 客户端封装
-│   │   ├── rpc_config.h          # 配置文件解析
-│   │   ├── rpc_application.h     # 框架入口（单例）
-│   │   └── rpc_logger.h          # glog 日志封装
-│   └── *.cc               # 对应实现
+│   ├── include/
+│   │   ├── rpc_provider.h
+│   │   ├── rpc_channel.h
+│   │   ├── service_discovery.h
+│   │   ├── consistent_hash.h
+│   │   ├── rpc_connect_pool.h
+│   │   ├── rpc_controller.h
+│   │   ├── zookeeperutil.h
+│   │   ├── rpc_config.h
+│   │   └── rpc_application.h
+│   └── *.cc
 ├── example/
-│   ├── callee/server.cc   # 服务端示例（UserService.Login）
-│   └── caller/client.cc   # 客户端压测示例（100 线程 x 1000 次）
-├── test.conf              # 配置文件
+├── third_party/muduo/
+├── Dockerfile
+├── docker-compose.yml
+├── test.conf
+├── test.docker.conf
 └── CMakeLists.txt
 ```
 
-## 快速开始
+## Build and Run
 
 ```bash
-# 1. 启动 Zookeeper
-cd /usr/share/zookeeper/bin && sudo ./zkServer.sh start
-
-# 2. 编译
-cd build && cmake .. && make -j$(nproc)
-
-# 3. 启动服务端
-./server -i ../test.conf
-# -> service_name=UserServiceRpc / zookeeper_init success / RpcProvider start...
-
-# 4. 启动客户端（100 线程 x 1000 次 = 10 万次调用）
-./client -i ../test.conf
-# -> Total requests: 100000 / Success: 100000 / Fail: 0 / QPS: 6700+
+mkdir -p build
+cd build
+cmake ..
+make -j$(nproc)
 ```
 
-## 压测方式
+启动 Zookeeper、服务端和客户端：
 
-- 100 线程并发 x 每线程 1000 次 = 10 万次真实 RPC 调用
-- 连接池预热 100 条长连接，避免握手开销
-- 业务端模拟查库 5ms/请求
-- 结果：10 万次 0 失败，QPS 6700+
+```bash
+sudo /usr/share/zookeeper/bin/zkServer.sh start
+./server -i ../test.conf
+./client -i ../test.conf
+```
 
+## Docker Deployment
+
+Docker Compose 将 Zookeeper、RPC Server 和 RPC Client 放入同一个 bridge 网络。当前配置使用固定容器 IP，以兼容项目现有的地址解析和服务注册逻辑。
+
+```bash
+docker compose build
+docker compose up -d zookeeper rpc-server
+docker compose run --rm rpc-client
+docker compose ps
+docker compose logs --tail=50 rpc-server
+docker compose down
+```
+
+## Benchmark
+
+测试配置为 100 个并发线程，每个线程执行 1000 次 RPC 调用，共 100000 次请求；服务端包含约 5 ms 的模拟业务耗时。
+
+| Environment | Requests | Success | Failures | QPS |
+| --- | ---: | ---: | ---: | ---: |
+| Ubuntu native | 100000 | 100000 | 0 | 约 16952 |
+| Docker Compose | 100000 | 100000 | 0 | 约 16633 |
+
+两种环境均完成 100000 次调用且失败数为 0。测试结果仅用于当前实现和测试环境下的对比参考。
+
+## Future Improvements
+
+- 使用服务名解析替代固定容器 IP
+- 增加 Zookeeper 健康检查和服务就绪等待
+- 增加请求超时、重试、取消和熔断机制
+- 完善连接失效检测与连接池动态扩缩容
+- 增加协议版本、校验和及统一错误码
+- 补充单元测试、集成测试和持续集成配置
+
+## License
+
+This project is intended for learning and engineering practice.
 
