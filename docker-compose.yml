@@ -1,0 +1,45 @@
+services:
+  zookeeper:
+    image: zookeeper:3.9
+    container_name: rpc-zookeeper
+    networks:
+      rpc-network:
+        ipv4_address: 172.30.0.2
+
+  rpc-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: rpc-app:local
+    container_name: rpc-server
+    depends_on:
+      - zookeeper
+    command:
+      - /app/build/server
+      - -i
+      - /app/test.docker.conf
+    ports:
+      - "8000:8000"
+    networks:
+      rpc-network:
+        ipv4_address: 172.30.0.10
+
+  rpc-client:
+    image: rpc-app:local
+    container_name: rpc-client
+    depends_on:
+      - rpc-server
+    command:
+      - /app/build/client
+      - -i
+      - /app/test.docker.conf
+    networks:
+      rpc-network:
+        ipv4_address: 172.30.0.20
+
+networks:
+  rpc-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
