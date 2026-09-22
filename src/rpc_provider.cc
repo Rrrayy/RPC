@@ -140,7 +140,10 @@ void RpcProvider::OnMessage(const muduo::net::TcpConnectionPtr &conn, muduo::net
 
         auto it =service_map.find(service_name);
         if(it==service_map.end()){
-            std::cout<<service_name<<"is not exist" <<std::endl;
+			rpc::RpcResponse rpc_response;
+			rpc_response.set_error_code(1);
+			rpc_response.set_error_message("SERVICE_NOT_EXIST");
+			SendRpcEnvelope(conn,rpc_response);
             return ;
         }
 
@@ -168,6 +171,31 @@ void RpcProvider::OnMessage(const muduo::net::TcpConnectionPtr &conn, muduo::net
         });
     }
 }
+void RpcProvider::SendRpcEnvelope(const muduo::net::TcpConnectionPtr& conn,const rpc::RpcResponse& response){
+	if(!conn||!conn->connected()){
+		LOG(ERROR)<<"connection already closed";
+		return;
+	}
+	std::string response_str;
+	 if(!response.SerializeToString(&response_str)){
+        LOG(ERROR)<<"serialize rpc response failed";
+        return;
+    }
+
+    if(response_str.size()>UINT32_MAX){
+        LOG(ERROR)<<"rpc response too large";
+        return;
+    }
+
+    const std::uint32_t response_length=static_cast<std::uint32_t>(response_str.size());
+    const std::uint32_t network_length=htonl(response_length);
+    std::string send_buffer(sizeof(network_length)+response_str.size(),'\0');
+
+    std::memcpy(send_buffer.data(),&network_length,sizeof(network_length));
+    std::memcpy(send_buffer.data()+sizeof(network_length),response_str.data(),response_str.size());
+
+    conn->send(send_buffer);
+}
 
 void RpcProvider::SendRpcResponse(const muduo::net::TcpConnectionPtr& conn, google::protobuf::Message* response, google::protobuf::Message* request){
     if(response==nullptr||request==nullptr){
@@ -176,28 +204,23 @@ void RpcProvider::SendRpcResponse(const muduo::net::TcpConnectionPtr& conn, goog
 		delete request;
 		return ;
 	}
-	if(!conn->connected()){
-		LOG(ERROR)<<"connection already closed ";
-		delete response;
-		delete request;
-		return ;
-	}
+	rpc::RpcResponse rpc_response;
+	std::string payload;
 
-	std::string response_str;
-    if(response->SerializeToString(&response_str)){
-        uint32_t len = response_str.size();
-        uint32_t net_len  = htonl(len);
-        std::string send_buf;
-        send_buf.resize(4+len);
-        std::memcpy(&send_buf[0],&net_len,4);
-        std::memcpy(&send_buf[4],response_str.data(),len);
-		conn->send(send_buf);        
+    if(!response->SerializeToString(&payload)){
+		LOG(ERROR)<<"serialize business response failed";
+        delete response;
+        delete request;
+        return;
     }
-    else{
-        LOG(ERROR)<<"serialize response error!";
-    }
-    delete response;
-    delete request;
+
+	rpc_response.set_error_code(0);
+	rpc_response.set_payload(payload);
+
+	SendRpcEnvelope(conn,rpc_response);
+
+	delete response;
+	delete request;
 }
 
 RpcProvider::~RpcProvider(){

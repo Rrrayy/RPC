@@ -2,8 +2,14 @@ syntax = "proto3";
 
 package rpc;
 
-message RpcHeader{
+message RpcHeader {
     string service_name = 1;
     string method_name = 2;
     uint32 args_size = 3;
+}
+
+message RpcResponse {
+	int32 error_code = 1;
+	string error_message = 2;
+	bytes payload = 3;
 }

@@ -28,7 +28,8 @@ void send_request(int thread_id, std::atomic<int> &success_count, std::atomic<in
         stub.login(&controller, &request, &response, nullptr);   // 小写 login（你的 proto 定义）
 
         if (controller.Failed())
-        {
+        {	
+			std::cerr<<"RPC failed: "<<controller.ErrorText()<<std::endl;
             fail_count++;
         }
         else
