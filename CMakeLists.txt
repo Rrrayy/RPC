@@ -34,6 +34,11 @@ target_link_libraries(rpc_core PUBLIC ${LIBS})
 # 验证程序
 add_executable(config_test example/config_test.cpp)
 target_link_libraries(config_test rpc_core)
+
+# RPC 控制器基础状态测试。
+add_executable(controller_test test/controller_test.cpp)
+target_link_libraries(controller_test rpc_core)
+
 # RPC 服务端
 add_executable(server example/callee/server.cc example/user.pb.cc)
 target_link_libraries(server rpc_core)
