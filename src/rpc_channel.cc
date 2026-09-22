@@ -343,10 +343,7 @@ void RpcChannel::CallMethod(
 				set_failed("response body too large");
 				is_bad=true;
 			}else{
-				std::vector<char> response_buffer(
-					response_length
-				);
-
+				std::vector<char> response_buffer(response_length);
 				if(
 					recv_exact(
 						client_fd,
@@ -358,14 +355,24 @@ void RpcChannel::CallMethod(
 				){
 					set_failed("receive response body failed");
 					is_bad=true;
-				}else if(
-					!response->ParseFromArray(
+				}else{
+					rpc::RpcResponse rpc_response;
+
+					if(!rpc_response.ParseFromArray(
 						response_buffer.data(),
 						static_cast<int>(response_length)
-					)
-				){
-					set_failed("parse response failed");
-					is_bad=true;
+					)){
+						set_failed("parse rpc response failed");
+						is_bad=true;
+					}else if(rpc_response.error_code()!=0){
+						set_failed(rpc_response.error_message());
+						is_bad=true;
+					}else if(!response->ParseFromString(
+						rpc_response.payload()
+					)){
+						set_failed("parse business response failed");
+						is_bad=true;
+					}
 				}
 			}
 		}
