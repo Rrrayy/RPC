@@ -149,7 +149,10 @@ void RpcProvider::OnMessage(const muduo::net::TcpConnectionPtr &conn, muduo::net
 
         auto mit = it->second.method_map.find(method_name);
         if(mit == it->second.method_map.end()){
-            std::cout<<service_name<<"."<<method_name<<" is not exist!"<<std::endl;
+			rpc::RpcResponse rpc_response;
+			rpc_response.set_error_code(2);
+			rpc_response.set_error_message("METHOD_NOT_EXIST");
+			SendRpcEnvelope(conn,rpc_response);
             return ;
         }
 
@@ -171,6 +174,7 @@ void RpcProvider::OnMessage(const muduo::net::TcpConnectionPtr &conn, muduo::net
         });
     }
 }
+
 void RpcProvider::SendRpcEnvelope(const muduo::net::TcpConnectionPtr& conn,const rpc::RpcResponse& response){
 	if(!conn||!conn->connected()){
 		LOG(ERROR)<<"connection already closed";
