@@ -162,6 +162,10 @@ void RpcProvider::OnMessage(const muduo::net::TcpConnectionPtr &conn, muduo::net
         google::protobuf::Message *request = service->GetRequestPrototype(method).New();
         if(!request->ParseFromString(args_str)){
             delete request;
+			rpc::RpcResponse rpc_response;
+			rpc_response.set_error_code(3);
+			rpc_response.set_error_message("INVALID_REQUEST");
+			SendRpcEnvelope(conn,rpc_response);
             return ;
         }
 
