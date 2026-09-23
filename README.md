@@ -1,39 +1,60 @@
-# RPC Framework
+# Lightweight RPC Framework
 
-基于 C++17、muduo、Protobuf 和 Zookeeper 实现的轻量级 RPC 框架，覆盖客户端调用、协议编解码、服务端分发、服务注册发现、负载均衡和容器化部署。
+<div align="center">
 
-## Features
+基于 C++17 的学习型 RPC 框架，覆盖网络通信、Protobuf 编解码、服务注册发现、连接池和一致性哈希。
 
-- 自定义二进制协议，支持 TCP 粘包与半包处理
-- Protobuf 序列化、反射分发与 Stub 生成
-- 基于 muduo 的 Reactor 网络模型
-- IO 线程与业务线程池解耦
-- Zookeeper 服务注册、发现与实例变更监听
-- 一致性哈希服务实例选择
-- TCP 长连接池与连接预热
-- Docker Compose 编排 Zookeeper、RPC Server 和 RPC Client
+![C++17](https://img.shields.io/badge/C%2B%2B-17-blue.svg)
+![CMake](https://img.shields.io/badge/build-CMake-064F8C.svg)
+![Linux](https://img.shields.io/badge/platform-Linux-orange.svg)
+![Status](https://img.shields.io/badge/status-learning-green.svg)
 
-## Architecture
+</div>
+
+## 项目简介
+
+本项目用于学习和实践 RPC 框架的核心设计：客户端通过 Stub 发起调用，服务发现模块选择服务实例，连接池复用 TCP 长连接，服务端通过网络线程接收请求并交给业务线程池执行。
+
+当前项目已经完成基础同步调用、统一错误响应和主要异常路径验证，定位为“可运行、可扩展、持续完善”的学习型工程。
+
+## 核心能力
+
+| 模块 | 当前能力 |
+| --- | --- |
+| 网络层 | 基于 muduo 的 Reactor 模型，支持 TCP 粘包/半包拆包 |
+| 序列化 | Protobuf 消息序列化、反射分发和 Stub 调用 |
+| 服务治理 | Zookeeper 服务注册、发现和节点变更监听 |
+| 负载均衡 | 基于虚拟节点的一致性哈希 |
+| 连接管理 | TCP 长连接池和连接预热 |
+| 错误处理 | `RpcResponse` 统一错误码、错误信息和业务 payload |
+| 构建部署 | CMake 构建，提供 Docker Compose 示例 |
+
+## 调用流程
 
 ```text
-Client
-  └─ Stub
-      └─ Service Discovery
-          └─ Connection Pool
-              └─ Serialize and Send
-                  └─ TCP
-                      └─ RPC Server
-                          ├─ Receive and Decode
-                          ├─ Method Dispatch
-                          ├─ Business Thread Pool
-                          └─ Response Callback
+Client Stub
+    │
+    ▼
+Service Discovery ──► Consistent Hash
+    │
+    ▼
+Connection Pool ──► Serialize and Send
+    │
+    ▼
+TCP / muduo
+    │
+    ▼
+RpcProvider ──► Decode ──► Dispatch ──► Business Thread Pool
+    │
+    ▼
+RpcResponse
 
-Zookeeper: service registration and discovery
+Zookeeper：服务注册、实例发现和节点变更通知
 ```
 
-一次调用的主要流程：客户端通过 Stub 发起调用，服务发现模块选择实例，连接池提供长连接，请求经过序列化和协议组包后发送到服务端。服务端网络线程负责接收和拆包，业务线程池完成反序列化与业务执行，最后通过回调返回响应。
+## 协议概览
 
-## Protocol
+请求帧结构：
 
 ```text
 +----------------+----------------+----------------+----------------+
@@ -41,107 +62,128 @@ Zookeeper: service registration and discovery
 +----------------+----------------+----------------+----------------+
 ```
 
-- `total_len`：协议头之后的完整消息长度
-- `header_len`：序列化后的 RPC 元数据长度
-- `RpcHeader`：服务名、方法名、参数长度等元数据
-- `args`：Protobuf 序列化后的业务参数
+响应使用统一的 Protobuf 信封：
 
-服务端根据长度字段循环拆包。数据不完整时保留缓冲区并等待下一次读取，完整解析后继续处理同一缓冲区中的后续请求。
+```protobuf
+message RpcResponse {
+    int32 error_code = 1;
+    string error_message = 2;
+    bytes payload = 3;
+}
+```
 
-## Service Discovery and Load Balancing
+当前错误码约定：
 
-服务端向 Zookeeper 注册服务路径和实例地址。实例地址使用临时节点保存，进程退出或会话断开后由 Zookeeper 自动清理。客户端通过 Watcher 感知实例列表变化，并使用一致性哈希选择服务节点。
+| 错误码 | 含义 |
+| ---: | --- |
+| `0` | 成功 |
+| `1` | `SERVICE_NOT_EXIST` |
+| `2` | `METHOD_NOT_EXIST` |
+| `3` | `INVALID_REQUEST` |
 
-一致性哈希采用虚拟节点和有序哈希环，节点变化时只影响局部 key 的映射，减少路由迁移范围。
+## 技术栈
 
-## Technology Stack
+`C++17` · `muduo` · `Protobuf` · `Zookeeper` · `glog` · `CMake` · `Docker Compose`
 
-| Component | Purpose |
-| --- | --- |
-| C++17 | Framework implementation |
-| muduo | Reactor network layer |
-| Protobuf | Serialization, reflection and Stub generation |
-| Zookeeper | Service registration and discovery |
-| glog | Logging |
-| CMake | Build system |
-| Docker Compose | Container orchestration |
-
-## Project Structure
+## 目录结构
 
 ```text
-rpc/
-├── src/
-│   ├── include/
-│   │   ├── rpc_provider.h
-│   │   ├── rpc_channel.h
-│   │   ├── service_discovery.h
-│   │   ├── consistent_hash.h
-│   │   ├── rpc_connect_pool.h
-│   │   ├── rpc_controller.h
-│   │   ├── zookeeperutil.h
-│   │   ├── rpc_config.h
-│   │   └── rpc_application.h
-│   └── *.cc
-├── example/
-├── third_party/muduo/
-├── Dockerfile
-├── docker-compose.yml
+RPC-git/
+├── src/                 # RPC 核心实现和协议文件
+│   ├── include/         # 公共头文件
+│   └── *.cc / *.proto
+├── example/             # 客户端、服务端和示例 Protobuf
+├── test/                # 单元测试和故障验证
+├── third_party/         # 第三方依赖
+├── CMakeLists.txt
 ├── test.conf
-├── test.docker.conf
-└── CMakeLists.txt
+├── Dockerfile
+└── docker-compose.yml
 ```
 
-## Build and Run
+## 快速开始
+
+### 构建
+
+需要 Ubuntu/Linux、CMake、C++17 编译器、Protobuf、Zookeeper、glog 和 muduo 环境。
 
 ```bash
-mkdir -p build
-cd build
-cmake ..
-make -j$(nproc)
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build -j"$(nproc)"
 ```
 
-启动 Zookeeper、服务端和客户端：
+### 启动本地示例
+
+先确保 Zookeeper 已启动，并根据本机环境检查 `test.conf`：
 
 ```bash
-sudo /usr/share/zookeeper/bin/zkServer.sh start
-./server -i ../test.conf
-./client -i ../test.conf
+./build/server -i ./test.conf
 ```
 
-## Docker Deployment
+另开终端运行客户端：
 
-Docker Compose 将 Zookeeper、RPC Server 和 RPC Client 放入同一个 bridge 网络。当前配置使用固定容器 IP，以兼容项目现有的地址解析和服务注册逻辑。
+```bash
+./build/client -i ./test.conf
+```
+
+### 运行测试
+
+```bash
+./build/config_test -i ./test.conf
+./build/controller_test
+```
+
+## Docker 部署
 
 ```bash
 docker compose build
 docker compose up -d zookeeper rpc-server
 docker compose run --rm rpc-client
-docker compose ps
-docker compose logs --tail=50 rpc-server
 docker compose down
 ```
 
-## Benchmark
+Docker 配置用于本地演示，正式部署前仍需完善服务就绪检查、服务名解析和运行参数管理。
 
-测试配置为 100 个并发线程，每个线程执行 1000 次 RPC 调用，共 100000 次请求；服务端包含约 5 ms 的模拟业务耗时。
+## 当前验证结果
 
-| Environment | Requests | Success | Failures | QPS |
-| --- | ---: | ---: | ---: | ---: |
-| Ubuntu native | 100000 | 100000 | 0 | 约 16952 |
-| Docker Compose | 100000 | 100000 | 0 | 约 16633 |
+当前基线为 Ubuntu Debug 构建、单服务实例、约 5 ms 模拟业务耗时：
 
-两种环境均完成 100000 次调用且失败数为 0。测试结果仅用于当前实现和测试环境下的对比参考。
+| 场景 | 请求数 | 成功 | 失败 | 结果 |
+| --- | ---: | ---: | ---: | --- |
+| 正常 RPC 调用 | 100000 | 100000 | 0 | 通过 |
+| 未知服务 | 100000 | 0 | 100000 | 收到 `SERVICE_NOT_EXIST` |
+| 未知方法 | 100000 | 0 | 100000 | 收到 `METHOD_NOT_EXIST` |
+| 非法请求参数 | 100000 | 0 | 100000 | 收到 `INVALID_REQUEST` |
 
-## Future Improvements
+正常调用本次实测 QPS 约为 `6738`。该数据仅代表当前机器、构建模式、并发度和业务耗时下的结果，不作为通用性能承诺。
 
-- 使用服务名解析替代固定容器 IP
-- 增加 Zookeeper 健康检查和服务就绪等待
-- 增加请求超时、重试、取消和熔断机制
-- 完善连接失效检测与连接池动态扩缩容
-- 增加协议版本、校验和及统一错误码
-- 补充单元测试、集成测试和持续集成配置
+## 开发状态
+
+已完成：
+
+- `RpcController` 基础实现和单元测试
+- 统一 `RpcResponse` 错误响应
+- 未知服务、未知方法和非法请求错误处理
+- 基础服务发现、连接池和一致性哈希调用链
+
+计划完善：
+
+- 请求超时、取消、重试和真正的 `request_id` 响应匹配
+- 连接池状态治理、坏连接剔除和服务端重启恢复
+- Zookeeper 快照、健康检查和优雅摘流
+- 协议边界测试、Sanitizer、Release 基准和 CI
+
+
+## 贡献方式
+
+```text
+main
+  └── fix/<feature-or-bug>
+        └── test → commit → push → Pull Request → merge
+```
+
+建议每个改动独立分支、独立提交，并在 PR 描述中记录问题、方案和验证结果。
 
 ## License
 
-This project is intended for learning and engineering practice.
-
+本项目用于学习和工程实践。
