@@ -190,10 +190,12 @@ void RpcProvider::SendRpcEnvelope(const muduo::net::TcpConnectionPtr& conn,const
         return;
     }
 
-    if(response_str.size()>UINT32_MAX){
-        LOG(ERROR)<<"rpc response too large";
-        return;
-    }
+    constexpr std::size_t max_response_length=4*1024*1024;
+
+	if(response_str.size()>max_response_length){
+		LOG(ERROR)<<"rpc response too large";
+		return;
+	}
 
     const std::uint32_t response_length=static_cast<std::uint32_t>(response_str.size());
     const std::uint32_t network_length=htonl(response_length);
