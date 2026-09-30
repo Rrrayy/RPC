@@ -194,8 +194,18 @@ void RpcProvider::SendRpcEnvelope(const muduo::net::TcpConnectionPtr& conn,const
 
 	if(response_str.size()>max_response_length){
 		LOG(ERROR)<<"rpc response too large";
-		return;
-	}
+
+		rpc::RpcResponse error_response;
+		error_response.set_error_code(5);
+		error_response.set_error_message("RESPONSE_TOO_LARGE");
+
+		response_str.clear();
+
+		if(!error_response.SerializeToString(&response_str)){
+			LOG(ERROR)<<"serialize oversized response error failed";
+			return;
+		}
+}
 
     const std::uint32_t response_length=static_cast<std::uint32_t>(response_str.size());
     const std::uint32_t network_length=htonl(response_length);
@@ -218,13 +228,13 @@ void RpcProvider::SendRpcResponse(const muduo::net::TcpConnectionPtr& conn, goog
 	std::string payload;
 
     if(!response->SerializeToString(&payload)){
-	LOG(ERROR)<<"serialize business response failed";
-	rpc_response.set_error_code(4);
-	rpc_response.set_error_message("RESPONSE_SERIALIZATION_FAILED");
-	SendRpcEnvelope(conn,rpc_response);
-	delete response;
-	delete request;
-	return;
+		LOG(ERROR)<<"serialize business response failed";
+		rpc_response.set_error_code(4);
+		rpc_response.set_error_message("RESPONSE_SERIALIZATION_FAILED");
+		SendRpcEnvelope(conn,rpc_response);
+		delete response;
+		delete request;
+		return;
 	}
 
 	rpc_response.set_error_code(0);
