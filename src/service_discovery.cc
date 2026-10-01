@@ -9,7 +9,12 @@ ServiceDiscovery &ServiceDiscovery::GetInstance()
 
 void ServiceDiscovery::Init()
 {
-    m_zkClient.Start();
+    std::call_once(
+        m_init_flag,
+        [this](){
+            m_zkClient.Start();
+        }
+    );
 }
 
 std::string ServiceDiscovery::GetTargetNode(const std::string &service_name, const std::string &key)

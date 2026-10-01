@@ -137,12 +137,14 @@ void RpcProvider::OnMessage(const muduo::net::TcpConnectionPtr &conn, muduo::net
 
         std::string service_name = rpcHeader.service_name();
         std::string method_name = rpcHeader.method_name();
+		std::uint64_t request_id = rpcHeader.request_id();
 
         auto it =service_map.find(service_name);
         if(it==service_map.end()){
 			rpc::RpcResponse rpc_response;
 			rpc_response.set_error_code(1);
 			rpc_response.set_error_message("SERVICE_NOT_EXIST");
+			rpc_response.set_request_id(request_id);
 			SendRpcEnvelope(conn,rpc_response);
             return ;
         }
@@ -152,6 +154,7 @@ void RpcProvider::OnMessage(const muduo::net::TcpConnectionPtr &conn, muduo::net
 			rpc::RpcResponse rpc_response;
 			rpc_response.set_error_code(2);
 			rpc_response.set_error_message("METHOD_NOT_EXIST");
+			rpc_response.set_request_id(request_id);
 			SendRpcEnvelope(conn,rpc_response);
             return ;
         }
@@ -165,13 +168,14 @@ void RpcProvider::OnMessage(const muduo::net::TcpConnectionPtr &conn, muduo::net
 			rpc::RpcResponse rpc_response;
 			rpc_response.set_error_code(3);
 			rpc_response.set_error_message("INVALID_REQUEST");
+			rpc_response.set_request_id(request_id);
 			SendRpcEnvelope(conn,rpc_response);
             return ;
         }
 
         google::protobuf::Message *response = service->GetResponsePrototype(method).New();
         google::protobuf::Closure *done = new RpcClosure(
-            [this ,conn , response ,request](){ this->SendRpcResponse(conn,response,request);});
+            [this ,conn , response ,request,request_id	](){ this->SendRpcResponse(conn,response,request,request_id);});
 
         m_thread_pool.run([service,method,request,response,done](){
             service->CallMethod(method,nullptr,request,response,done);
@@ -217,7 +221,7 @@ void RpcProvider::SendRpcEnvelope(const muduo::net::TcpConnectionPtr& conn,const
     conn->send(send_buffer);
 }
 
-void RpcProvider::SendRpcResponse(const muduo::net::TcpConnectionPtr& conn, google::protobuf::Message* response, google::protobuf::Message* request){
+void RpcProvider::SendRpcResponse(const muduo::net::TcpConnectionPtr& conn, google::protobuf::Message* response, google::protobuf::Message* request, std::uint64_t request_id){
     if(response==nullptr||request==nullptr){
 		LOG(ERROR)<<"invalid response or request ";
 		delete response;
@@ -225,6 +229,7 @@ void RpcProvider::SendRpcResponse(const muduo::net::TcpConnectionPtr& conn, goog
 		return ;
 	}
 	rpc::RpcResponse rpc_response;
+	rpc_response.set_request_id(request_id);
 	std::string payload;
 
     if(!response->SerializeToString(&payload)){

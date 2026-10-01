@@ -183,6 +183,7 @@ class RpcHeader final :
   enum : int {
     kServiceNameFieldNumber = 1,
     kMethodNameFieldNumber = 2,
+    kRequestIdFieldNumber = 4,
     kArgsSizeFieldNumber = 3,
   };
   // string service_name = 1;
@@ -213,6 +214,15 @@ class RpcHeader final :
   std::string* _internal_mutable_method_name();
   public:
 
+  // uint64 request_id = 4;
+  void clear_request_id();
+  uint64_t request_id() const;
+  void set_request_id(uint64_t value);
+  private:
+  uint64_t _internal_request_id() const;
+  void _internal_set_request_id(uint64_t value);
+  public:
+
   // uint32 args_size = 3;
   void clear_args_size();
   uint32_t args_size() const;
@@ -232,6 +242,7 @@ class RpcHeader final :
   struct Impl_ {
     ::PROTOBUF_NAMESPACE_ID::internal::ArenaStringPtr service_name_;
     ::PROTOBUF_NAMESPACE_ID::internal::ArenaStringPtr method_name_;
+    uint64_t request_id_;
     uint32_t args_size_;
     mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
   };
@@ -363,6 +374,7 @@ class RpcResponse final :
   enum : int {
     kErrorMessageFieldNumber = 2,
     kPayloadFieldNumber = 3,
+    kRequestIdFieldNumber = 4,
     kErrorCodeFieldNumber = 1,
   };
   // string error_message = 2;
@@ -393,6 +405,15 @@ class RpcResponse final :
   std::string* _internal_mutable_payload();
   public:
 
+  // uint64 request_id = 4;
+  void clear_request_id();
+  uint64_t request_id() const;
+  void set_request_id(uint64_t value);
+  private:
+  uint64_t _internal_request_id() const;
+  void _internal_set_request_id(uint64_t value);
+  public:
+
   // int32 error_code = 1;
   void clear_error_code();
   int32_t error_code() const;
@@ -412,6 +433,7 @@ class RpcResponse final :
   struct Impl_ {
     ::PROTOBUF_NAMESPACE_ID::internal::ArenaStringPtr error_message_;
     ::PROTOBUF_NAMESPACE_ID::internal::ArenaStringPtr payload_;
+    uint64_t request_id_;
     int32_t error_code_;
     mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
   };
@@ -549,6 +571,26 @@ inline void RpcHeader::set_args_size(uint32_t value) {
   // @@protoc_insertion_point(field_set:rpc.RpcHeader.args_size)
 }
 
+// uint64 request_id = 4;
+inline void RpcHeader::clear_request_id() {
+  _impl_.request_id_ = uint64_t{0u};
+}
+inline uint64_t RpcHeader::_internal_request_id() const {
+  return _impl_.request_id_;
+}
+inline uint64_t RpcHeader::request_id() const {
+  // @@protoc_insertion_point(field_get:rpc.RpcHeader.request_id)
+  return _internal_request_id();
+}
+inline void RpcHeader::_internal_set_request_id(uint64_t value) {
+  
+  _impl_.request_id_ = value;
+}
+inline void RpcHeader::set_request_id(uint64_t value) {
+  _internal_set_request_id(value);
+  // @@protoc_insertion_point(field_set:rpc.RpcHeader.request_id)
+}
+
 // -------------------------------------------------------------------
 
 // RpcResponse
@@ -671,6 +713,26 @@ inline void RpcResponse::set_allocated_payload(std::string* payload) {
   }
 #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
   // @@protoc_insertion_point(field_set_allocated:rpc.RpcResponse.payload)
+}
+
+// uint64 request_id = 4;
+inline void RpcResponse::clear_request_id() {
+  _impl_.request_id_ = uint64_t{0u};
+}
+inline uint64_t RpcResponse::_internal_request_id() const {
+  return _impl_.request_id_;
+}
+inline uint64_t RpcResponse::request_id() const {
+  // @@protoc_insertion_point(field_get:rpc.RpcResponse.request_id)
+  return _internal_request_id();
+}
+inline void RpcResponse::_internal_set_request_id(uint64_t value) {
+  
+  _impl_.request_id_ = value;
+}
+inline void RpcResponse::set_request_id(uint64_t value) {
+  _internal_set_request_id(value);
+  // @@protoc_insertion_point(field_set:rpc.RpcResponse.request_id)
 }
 
 #ifdef __GNUC__
