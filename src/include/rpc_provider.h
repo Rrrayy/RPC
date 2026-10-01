@@ -11,6 +11,8 @@
 #include <functional>
 #include <string>
 #include <unordered_map>
+#include <cstdint> 
+
 namespace rpc{
 	class RpcResponse;
 }
@@ -30,7 +32,7 @@ private:
     void OnConnection(const muduo::net::TcpConnectionPtr& conn);
     void OnMessage(const muduo::net::TcpConnectionPtr& conn , muduo::net::Buffer* buffer, muduo::Timestamp receive_time);
 	void SendRpcEnvelope(const muduo::net::TcpConnectionPtr& conn,const rpc::RpcResponse& response);
-    void SendRpcResponse(const muduo::net::TcpConnectionPtr& conn, google::protobuf::Message* response, google::protobuf::Message* request);
+    void SendRpcResponse(const muduo::net::TcpConnectionPtr& conn, google::protobuf::Message* response, google::protobuf::Message* request, std::uint64_t request_id);
 
 };
 #endif

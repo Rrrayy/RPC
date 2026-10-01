@@ -9,17 +9,24 @@ ServiceDiscovery &ServiceDiscovery::GetInstance()
 
 void ServiceDiscovery::Init()
 {
-    m_zkClient.Start();
+    std::call_once(
+        m_init_flag,
+        [this](){
+            m_zkClient.Start();
+        }
+    );
 }
 
 std::string ServiceDiscovery::GetTargetNode(const std::string &service_name, const std::string &key)
 {
     {
-      
-        std::shared_lock<std::shared_timed_mutex> read_lock(m_rw_mtx); 
-        if (m_chash_map.find(service_name) != m_chash_map.end())
-        {
-            return m_chash_map[service_name]->GetTargetNode(key);
+        std::shared_lock<std::shared_timed_mutex> read_lock(m_rw_mtx);
+        auto iter=m_chash_map.find(service_name);
+        if(iter!=m_chash_map.end()){
+            std::string target_node=iter->second->GetTargetNode(key);
+            if(!target_node.empty()){
+                return target_node;
+            }
         }
     }
 
@@ -30,14 +37,19 @@ std::string ServiceDiscovery::GetTargetNode(const std::string &service_name, con
     {
         // 拉取到数据后，加写锁（独占锁）更新内部数据结构
         std::unique_lock<std::shared_timed_mutex> write_lock(m_rw_mtx);
-        // 双重检查，防止其他线程已经初始化
-        if (m_chash_map.find(service_name) == m_chash_map.end())
-        {
-            m_chash_map[service_name] = std::unique_ptr<ConsistentHash>(new ConsistentHash());
-            m_chash_map[service_name]->UpdateNodes(new_nodes);
-            m_nodes_cache[service_name] = new_nodes;
+        auto iter=m_chash_map.find(service_name);
+        if(iter==m_chash_map.end()){
+            m_chash_map[service_name]=
+                std::unique_ptr<ConsistentHash>(new ConsistentHash());
+            iter=m_chash_map.find(service_name);
         }
-        return m_chash_map[service_name]->GetTargetNode(key);
+
+        if(!new_nodes.empty()){
+            iter->second->UpdateNodes(new_nodes);
+            m_nodes_cache[service_name]=new_nodes;
+        }
+
+        return iter->second->GetTargetNode(key);
     }
 }
 

@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <shared_mutex> 
+#include <mutex>
 
 class ServiceDiscovery
 {
@@ -23,6 +24,7 @@ private:
     ServiceDiscovery &operator=(const ServiceDiscovery &) = delete;
 
     ZkClient m_zkClient;
+    std::once_flag m_init_flag;
     std::unordered_map<std::string, std::unique_ptr<ConsistentHash>> m_chash_map; 
     std::unordered_map<std::string, std::vector<std::string>> m_nodes_cache;      
     
