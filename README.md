@@ -13,7 +13,7 @@
 
 ## 项目简介
 
-本项目用于学习和实践 RPC 框架的核心设计：客户端通过 Stub 发起调用，服务发现模块选择服务实例，连接池复用 TCP 长连接，服务端通过网络线程接收请求并交给业务线程池执行。
+本项目用于学习和实践 RPC 框架的核心设计：客户端通过 Stub 发起同步或异步调用，服务发现模块选择服务实例，连接池复用 TCP 长连接，客户端通过 `request_id` 匹配在途响应，服务端通过网络线程接收请求并交给业务线程池执行。
 
 当前项目已经完成基础同步调用、统一错误响应和主要异常路径验证，定位为“可运行、可扩展、持续完善”的学习型工程。
 
@@ -26,6 +26,7 @@
 | 服务治理 | Zookeeper 服务注册、发现和节点变更监听 |
 | 负载均衡 | 基于虚拟节点的一致性哈希 |
 | 连接管理 | TCP 长连接池和连接预热 |
+| 调用模型 | 同步调用、异步回调、多请求在途和响应 ID 匹配 |
 | 错误处理 | `RpcResponse` 统一错误码、错误信息和业务 payload |
 | 构建部署 | CMake 构建，提供 Docker Compose 示例 |
 
@@ -38,7 +39,7 @@ Client Stub
 Service Discovery ──► Consistent Hash
     │
     ▼
-Connection Pool ──► Serialize and Send
+Connection Pool ──► Serialize and Send (request_id)
     │
     ▼
 TCP / muduo
@@ -47,7 +48,7 @@ TCP / muduo
 RpcProvider ──► Decode ──► Dispatch ──► Business Thread Pool
     │
     ▼
-RpcResponse
+RpcResponse ──► ReaderLoop ──► pending_requests[request_id] ──► Callback / Controller
 
 Zookeeper：服务注册、实例发现和节点变更通知
 ```
@@ -69,8 +70,11 @@ message RpcResponse {
     int32 error_code = 1;
     string error_message = 2;
     bytes payload = 3;
+    uint64 request_id = 4;
 }
 ```
+
+请求头 `RpcHeader` 同样携带 `uint64 request_id`。客户端发送请求后，连接后台读取线程按照该 ID 找到对应的 pending 请求并触发回调，因此同一条长连接可以同时承载多个在途请求。
 
 当前错误码约定：
 
@@ -80,6 +84,8 @@ message RpcResponse {
 | `1` | `SERVICE_NOT_EXIST` |
 | `2` | `METHOD_NOT_EXIST` |
 | `3` | `INVALID_REQUEST` |
+| `4` | `RESPONSE_SERIALIZATION_FAILED` |
+| `5` | `RESPONSE_TOO_LARGE` |
 
 ## 技术栈
 
@@ -150,12 +156,13 @@ Docker 配置用于本地演示，正式部署前仍需完善服务就绪检查�
 
 | 场景 | 请求数 | 成功 | 失败 | 结果 |
 | --- | ---: | ---: | ---: | --- |
-| 正常 RPC 调用 | 100000 | 100000 | 0 | 通过 |
+| 正常同步 RPC 调用 | 100000 | 100000 | 0 | 通过 |
+| 并发异步 RPC 调用 | 100 | 100 | 0 | 通过 |
 | 未知服务 | 100000 | 0 | 100000 | 收到 `SERVICE_NOT_EXIST` |
 | 未知方法 | 100000 | 0 | 100000 | 收到 `METHOD_NOT_EXIST` |
 | 非法请求参数 | 100000 | 0 | 100000 | 收到 `INVALID_REQUEST` |
 
-正常调用本次实测 QPS 约为 `6738`。该数据仅代表当前机器、构建模式、并发度和业务耗时下的结果，不作为通用性能承诺。
+正常调用本次实测 QPS 约为 `6643`，此前同步基线约为 `6738`。该数据仅代表当前机器、构建模式、并发度和业务耗时下的结果，不作为通用性能承诺。
 
 ## 开发状态
 
@@ -165,11 +172,15 @@ Docker 配置用于本地演示，正式部署前仍需完善服务就绪检查�
 - 统一 `RpcResponse` 错误响应
 - 未知服务、未知方法和非法请求错误处理
 - 基础服务发现、连接池和一致性哈希调用链
+- `request_id` 请求与响应匹配
+- 同步/异步调用分流、长连接 ReaderLoop 和 pending 请求管理
+- 连接异常时的批量失败、坏连接剔除和自动重建
+- Zookeeper 单次初始化和服务发现空环恢复
 
 计划完善：
 
-- 请求超时、取消、重试和真正的 `request_id` 响应匹配
-- 连接池状态治理、坏连接剔除和服务端重启恢复
+- 请求超时、取消和幂等重试
+- 更完善的连接状态机、服务端重启恢复和多节点故障转移
 - Zookeeper 快照、健康检查和优雅摘流
 - 协议边界测试、Sanitizer、Release 基准和 CI
 
