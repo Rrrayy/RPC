@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <vector>
 #include <unordered_map>
 #include <atomic>
 #include <thread>	
@@ -99,6 +100,8 @@ private:
 	std::mutex connections_mutex;
 
 	std::unordered_map<std::string,std::shared_ptr<ConnectionState>> connections;
+	std::vector<std::shared_ptr<ConnectionState>> owned_connections;
+	
 	bool RegisterPendingRequest(const std::shared_ptr<PendingRequest>& pending_request);
 
 	std::shared_ptr<PendingRequest> TakePendingRequest(std::uint64_t request_id);

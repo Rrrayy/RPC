@@ -27,37 +27,28 @@ RpcChannel::RpcChannel(bool connect_now){
 	(void)connect_now;
 }
 
-RpcChannel::~RpcChannel()
-{
-	std::vector<std::shared_ptr<ConnectionState>> active_connections;
+RpcChannel::~RpcChannel(){
+	std::vector<std::shared_ptr<ConnectionState>> connections_to_join;
 
 	{
 		std::lock_guard<std::mutex> lock(connections_mutex);
 
+		// 停止当前连接，并唤醒阻塞在 recv 中的读取线程。
 		for(auto& entry:connections){
-			std::shared_ptr<ConnectionState> connection=entry.second;
-
+			auto& connection=entry.second;
 			connection->stopped.store(true);
-
-			::shutdown(
-				connection->file_descriptor,
-				SHUT_RDWR
-			);
-
-			active_connections.push_back(connection);
+			::shutdown(connection->file_descriptor,SHUT_RDWR);
 		}
 
 		connections.clear();
+		connections_to_join.swap(owned_connections);
 	}
 
-	for(
-		const std::shared_ptr<ConnectionState>& connection:
-		active_connections
-	){
+	// 锁外等待，允许读取线程完成自己的退出清理。
+	for(const auto& connection:connections_to_join){
 		if(connection->reader_thread.joinable()){
 			connection->reader_thread.join();
 		}
-
 		ReleaseConnection(connection);
 	}
 
@@ -206,31 +197,17 @@ std::shared_ptr<RpcChannel::ConnectionState> RpcChannel::GetOrCreateConnection(c
 		return nullptr;
 	}
 
-	auto new_connection=
-		std::make_shared<ConnectionState>(
-			endpoint,
-			target_ip,
-			target_port,
-			file_descriptor
-		);
-
+	auto new_connection=std::make_shared<ConnectionState>(endpoint,target_ip,target_port,file_descriptor);
 	{
 		std::lock_guard<std::mutex> lock(connections_mutex);
 
-		auto result=connections.emplace(
-			endpoint,
-			new_connection
-		);
+		auto result=connections.emplace(endpoint,new_connection);
 
 		if(!result.second){
-			RpcConnectPool::GetInstance().ReturnConnection(
-				target_ip,
-				target_port,
-				file_descriptor
-			);
-
+			RpcConnectPool::GetInstance().ReturnConnection(target_ip,target_port,file_descriptor);
 			return result.first->second;
 		}
+		owned_connections.push_back(new_connection);
 	}
 		try{
 		new_connection->reader_thread=std::thread(&RpcChannel::ReaderLoop,this,new_connection);
@@ -255,19 +232,14 @@ std::shared_ptr<RpcChannel::ConnectionState> RpcChannel::GetOrCreateConnection(c
 	return new_connection;
 }
 
-void RpcChannel::ReleaseConnection(
-	const std::shared_ptr<ConnectionState>& connection
-)
+void RpcChannel::ReleaseConnection(const std::shared_ptr<ConnectionState>& connection)
 {
 	if(connection==nullptr){
 		return;
 	}
 
 	bool expected=false;
-	if(!connection->returned_to_pool.compare_exchange_strong(
-		expected,
-		true
-	)){
+	if(!connection->returned_to_pool.compare_exchange_strong(expected,true)){
 		return;
 	}
 
@@ -279,7 +251,7 @@ void RpcChannel::ReleaseConnection(
 	);
 }
 
-void RpcChannel::ReaderLoop(	const std::shared_ptr<ConnectionState>& connection)
+void RpcChannel::ReaderLoop(const std::shared_ptr<ConnectionState>& connection)
 {
 	if(connection==nullptr){
 		return;
