@@ -202,6 +202,7 @@ void RpcProvider::SendRpcEnvelope(const muduo::net::TcpConnectionPtr& conn,const
 		rpc::RpcResponse error_response;
 		error_response.set_error_code(5);
 		error_response.set_error_message("RESPONSE_TOO_LARGE");
+		error_response.set_request_id(response.request_id());
 
 		response_str.clear();
 
