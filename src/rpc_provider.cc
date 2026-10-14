@@ -146,7 +146,7 @@ void RpcProvider::OnMessage(const muduo::net::TcpConnectionPtr &conn, muduo::net
 			rpc_response.set_error_message("SERVICE_NOT_EXIST");
 			rpc_response.set_request_id(request_id);
 			SendRpcEnvelope(conn,rpc_response);
-            return ;
+            continue ;
         }
 
         auto mit = it->second.method_map.find(method_name);
@@ -156,7 +156,7 @@ void RpcProvider::OnMessage(const muduo::net::TcpConnectionPtr &conn, muduo::net
 			rpc_response.set_error_message("METHOD_NOT_EXIST");
 			rpc_response.set_request_id(request_id);
 			SendRpcEnvelope(conn,rpc_response);
-            return ;
+            continue ;
         }
 
         google::protobuf::Service *service = it->second.service;
@@ -170,7 +170,7 @@ void RpcProvider::OnMessage(const muduo::net::TcpConnectionPtr &conn, muduo::net
 			rpc_response.set_error_message("INVALID_REQUEST");
 			rpc_response.set_request_id(request_id);
 			SendRpcEnvelope(conn,rpc_response);
-            return ;
+            continue ;
         }
 
         google::protobuf::Message *response = service->GetResponsePrototype(method).New();
