@@ -19,8 +19,17 @@
 
 namespace{
 	std::atomic<std::uint64_t> request_id{0};
+	std::atomic<std::uint64_t> fallback_attempted{0};
+	std::atomic<std::uint64_t> fallback_connected{0};
+	std::atomic<std::uint64_t> fallback_completed{0};
 
 	constexpr std::uint32_t max_message_length=4*1024*1024;
+}
+
+RpcChannel::SyncFailoverStats RpcChannel::GetSyncFailoverStats(){
+	return {fallback_attempted.load(std::memory_order_relaxed),
+		fallback_connected.load(std::memory_order_relaxed),
+		fallback_completed.load(std::memory_order_relaxed)};
 }
 
 RpcChannel::RpcChannel(bool connect_now){
@@ -748,68 +757,60 @@ void RpcChannel::CallMethodSync(
 		return;
 	}
 
-	std::size_t separator_position=ip_port.rfind(':');
-
-	if(
-		separator_position==std::string::npos||
-		separator_position==0||
-		separator_position+1>=ip_port.size()
-	){
-		set_failed("invalid service address");
-
-		if(done!=nullptr){
-			done->Run();
+	std::string target_ip;
+	std::uint16_t target_port=0;
+	std::string borrow_error;
+	BorrowFailure borrow_failure;
+	auto borrow_endpoint=[&](const std::string& endpoint){
+		const auto separator=endpoint.rfind(':');
+		if(separator==std::string::npos||separator==0||separator+1>=endpoint.size()){
+			borrow_error="invalid service address: "+endpoint;
+			return -1;
 		}
-
-		return;
-	}
-
-	int port=0;
-
-	try{
-		port=std::stoi(
-			ip_port.substr(separator_position+1)
-		);
-	}catch(const std::exception& error){
-		(void)error;
-		set_failed("invalid service port");
-
-		if(done!=nullptr){
-			done->Run();
+		int port=0;
+		std::size_t parsed=0;
+		const auto port_text=endpoint.substr(separator+1);
+		try{
+			port=std::stoi(port_text,&parsed);
+		}catch(const std::exception&){
+			borrow_error="invalid service port: "+endpoint;
+			return -1;
 		}
-
-		return;
-	}
-
-	if(port<=0||port>65535){
-		set_failed("service port out of range");
-
-		if(done!=nullptr){
-			done->Run();
+		if(parsed!=port_text.size()||port<=0||port>65535){
+			borrow_error="invalid service port: "+endpoint;
+			return -1;
 		}
+		target_ip=endpoint.substr(0,separator);
+		target_port=static_cast<std::uint16_t>(port);
+		const int descriptor=RpcConnectPool::GetInstance().BorrowConnection(
+			target_ip,target_port,&borrow_failure);
+		if(descriptor==-1){
+			borrow_error="borrow connection failed endpoint="+endpoint+" "+borrow_failure.describe();
+		}
+		return descriptor;
+	};
 
-		return;
+	int client_fd=borrow_endpoint(ip_port);
+	bool used_fallback=false;
+	// No request bytes have been sent. Permit at most one different endpoint.
+	if(client_fd==-1&&borrow_failure.can_failover()){
+		const auto alternative=ServiceDiscovery::GetInstance().GetAlternativeNode(
+			service_name,route_key,ip_port);
+		if(!alternative.empty()){
+			const auto primary_error=borrow_error;
+			fallback_attempted.fetch_add(1,std::memory_order_relaxed);
+			client_fd=borrow_endpoint(alternative);
+			if(client_fd!=-1){
+				used_fallback=true;
+				fallback_connected.fetch_add(1,std::memory_order_relaxed);
+			}else{
+				borrow_error=primary_error+"; alternative: "+borrow_error;
+			}
+		}
 	}
-
-	std::string target_ip=
-		ip_port.substr(0,separator_position);
-
-	std::uint16_t target_port=
-		static_cast<std::uint16_t>(port);
-
-	int client_fd=
-		RpcConnectPool::GetInstance().BorrowConnection(
-			target_ip,
-			target_port
-		);
-
 	if(client_fd==-1){
-		set_failed("borrow connection from pool failed");
-
-		if(done!=nullptr){
-			done->Run();
-		}
-
+		set_failed(borrow_error);
+		if(done!=nullptr){done->Run();}
 		return;
 	}
 
@@ -969,6 +970,9 @@ void RpcChannel::CallMethodSync(
 		client_fd,
 		is_bad
 	);
+	if(used_fallback&&!is_bad){
+		fallback_completed.fetch_add(1,std::memory_order_relaxed);
+	}
 
 	if(done!=nullptr){
 		done->Run();
