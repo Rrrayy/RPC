@@ -2,7 +2,7 @@
 
 [简体中文](README.md) | **English**
 
-A C++17 RPC framework featuring Protobuf service calls, pooled TCP connections, ZooKeeper discovery, and request-ID-based asynchronous response dispatch.
+A Linux-oriented C++17 RPC framework prototype featuring Protobuf service calls, TCP connection reuse, ZooKeeper discovery, consistent-hash routing, and request-ID-based asynchronous response dispatch.
 
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white)
 ![Linux](https://img.shields.io/badge/platform-Linux-FCC624?logo=linux&logoColor=black)
@@ -12,9 +12,9 @@ A C++17 RPC framework featuring Protobuf service calls, pooled TCP connections, 
 
 ## Overview
 
-The framework implements the RPC call lifecycle: a client invokes a Protobuf Stub, service discovery resolves instances, consistent hashing selects a target, and a connection pool supplies a TCP connection. The server decodes the request, dispatches work to a business thread pool, and returns a unified response carrying the request ID.
+The client invokes a Protobuf Stub, service discovery resolves instances, consistent hashing selects a target, and a connection pool supplies a TCP connection. The server decodes the request, dispatches work to a business thread pool, and returns a unified response carrying the request ID.
 
-This project is an engineering exercise in systems programming and distributed communication. It supports synchronous calls, asynchronous callbacks, multiple outstanding requests on a connection, and several protocol and request error paths. Production adoption requires further work on deadlines, cancellation, security, and operational controls; see [Current limitations](#current-limitations).
+**Project status:** This version is intended for development validation and single-host/two-instance experiments. It supports synchronous calls, asynchronous callbacks, multiple outstanding requests on a connection, and protocol error handling, but is not production-ready. See [Current limitations](#current-limitations).
 
 ## Features
 
@@ -29,6 +29,7 @@ This project is an engineering exercise in systems programming and distributed c
 | Connection management | TCP reuse by endpoint and connection warm-up; idle connections use an MPMC queue, while bucket management uses mutexes |
 | Framing | Length-prefixed messages with partial/coalesced frame handling; request errors allow subsequent buffered frames to be processed |
 | Failure reporting | Unified response envelopes, preserved request IDs, bad-connection cleanup, and failure callbacks for affected async calls |
+| Alternate nodes | The synchronous path can try one alternate instance for eligible connection failures before sending; sent requests are never replayed |
 | Tooling | CMake static library and example binaries; Docker Compose configuration for local demonstrations |
 
 ## Architecture
@@ -112,9 +113,11 @@ Start a ZooKeeper server separately. Installing the C client development package
 From the repository root:
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j"$(nproc)"
 ```
+
+CMake currently sets Release flags explicitly to `-O2`, without the default `-DNDEBUG`. Use a separate directory for debugging: `cmake -S . -B build-debug -DCMAKE_BUILD_TYPE=Debug`, to keep build artifacts separate.
 
 Check `test.conf`, ensure the server address is reachable by clients, and wait for ZooKeeper to become ready:
 
@@ -169,14 +172,27 @@ Compose uses `test.docker.conf` and the fixed subnet `172.30.0.0/24`. If it conf
 
 ## Validation and performance
 
-Checks available in the repository:
+### Automated and integration tests
+
+The following targets are built by CMake. No CTest suite is currently registered, so run each executable directly:
 
 ```bash
+cmake --build build --target controller_test config_test hash_alternative_test pool_borrow_test cluster_test_server cluster_test_client -j"$(nproc)"
 ./build/controller_test
+./build/hash_alternative_test
+./build/pool_borrow_test
 ./build/config_test -i ./test.conf
 ```
 
-`controller_test` checks controller state and reset behavior. `config_test` prints loaded configuration values. No CTest suite is currently registered.
+| Target | Scope |
+| --- | --- |
+| `controller_test` | Controller state and reset behavior |
+| `hash_alternative_test` | Consistent-hash alternate-node selection boundaries |
+| `pool_borrow_test` | Connection-pool state recovery after borrow failures |
+| `cluster_test_server` / `cluster_test_client` | Two-instance request distribution and routing during node removal/recovery |
+| `config_test` | Configuration file loading |
+
+The two-node test requires ZooKeeper and two separate service instances, and exercises the synchronous call path. Setup, operator steps, and pass criteria are documented in the [two-node integration test guide](test/cluster/README.md). These integration tests are not reported as CI automation results.
 
 The following are manually observed development regressions, not automated CI reports:
 
@@ -188,7 +204,9 @@ The following are manually observed development regressions, not automated CI re
 | Oversized response injection | Temporarily reducing the size limit produced `RESPONSE_TOO_LARGE`; normal calls passed after restoring the limit |
 | Server disconnect | Client read failure and discovery node changes were observed while checking connection failure handling |
 
-Latest synchronous measurement: **100,000 calls in 6.6123 seconds, approximately 15,123 QPS**. Conditions: Ubuntu VMware VM, one service instance, 100 client threads, connection warm-up, and approximately 5ms simulated business work. The existing Debug build workflow was used; complete hardware, load, and build metadata were not captured separately.
+One manually observed synchronous benchmark: **100,000 calls in 6.6123 seconds, approximately 15,123 QPS**. Conditions: Ubuntu VMware VM, one service instance, 100 client threads, connection warm-up, and approximately 5ms simulated business work. It used a Debug build; complete hardware and system-load metadata were not recorded. Treat this as a development observation, not a reproducible performance guarantee.
+
+Subsequent observations on 2026-10-18 in the same environment: single-instance Release (actual `-O2`) averaged approximately **16,619 QPS** across five runs. One two-instance example-client run reached **17,307.5 QPS**, with 100,000 successes and zero failures. The latter measures aggregate client throughput, not per-node capacity or linear scaling, and does not replace the dedicated distribution and fault tests.
 
 This is a synchronous benchmark, not an async throughput measurement or a cross-environment performance guarantee. The change from roughly 6.7K to 15K QPS has not been attributed through controlled comparisons. A single batched socket write also does not guarantee a single server read; the mixed-request regression still needs a deterministic buffer-level test.
 
@@ -205,7 +223,8 @@ This is a synchronous benchmark, not an async throughput measurement or a cross-
 │   ├── rpc_connect_pool.cc   # Connection borrowing, return, and warm-up
 │   └── rpc_header.proto      # Framework headers and response envelopes
 ├── example/                  # Login service, client, and configuration check
-├── test/                     # Controller test
+├── test/                     # Focused checks and integration tests
+│   └── cluster/              # Two-node distribution and failover experiments
 ├── third_party/muduo/        # muduo source
 ├── CMakeLists.txt
 ├── Dockerfile
@@ -218,7 +237,7 @@ This is a synchronous benchmark, not an async throughput measurement or a cross-
 
 ## Current limitations
 
-- **Call control:** Framework-level deadlines, cancellation, automatic retries, and idempotency guarantees are not implemented. Example wait timeouts do not cancel outstanding RPCs.
+- **Call control:** Framework-level deadlines, cancellation, automatic retries of sent requests, and idempotency guarantees are not implemented. Only the synchronous path can try one alternate node for eligible connection failures before sending; the async path does not perform this reselection. Example wait timeouts do not cancel outstanding RPCs.
 - **Concurrency and lifetime:** Each async connection has a reader thread. Keep callbacks short and non-throwing to avoid blocking reads. Responses and controllers must remain alive until callbacks finish. Destroying a Channel from its own callback, or destroying it concurrently with new calls, is unsupported.
 - **Resource reclamation:** Disconnected connection states are retained until Channel destruction and thread joining. Long-running resource growth under frequent reconnects needs improvement, as do connection-generation isolation and failure-race validation.
 - **Operations and security:** The current connection path uses IPv4. TLS, authentication, rate limiting, backpressure, health checks, and complete session-expiration recovery remain incomplete.

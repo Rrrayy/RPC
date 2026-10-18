@@ -2,7 +2,7 @@
 
 **简体中文** | [English](README.en.md)
 
-基于 C++17 的 RPC 框架，实现 Protobuf 服务调用、TCP 长连接复用、ZooKeeper 服务发现，以及基于请求 ID 的异步响应分发。
+面向 Linux 的 C++17 RPC 框架原型，提供 Protobuf 服务调用、TCP 连接复用、ZooKeeper 服务发现、一致性哈希路由，以及基于请求 ID 的异步响应分发。
 
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white)
 ![Linux](https://img.shields.io/badge/platform-Linux-FCC624?logo=linux&logoColor=black)
@@ -12,9 +12,9 @@
 
 ## 项目概览
 
-本项目围绕完整 RPC 调用链构建：客户端通过 Protobuf Stub 发起调用，服务发现获取实例并通过一致性哈希选择目标，连接池提供 TCP 连接，服务端解析协议后将任务提交至业务线程池，最终返回携带请求 ID 的统一响应。
+客户端通过 Protobuf Stub 发起调用，服务发现获取实例并通过一致性哈希选择目标，连接池提供 TCP 连接；服务端解析协议后将任务提交至业务线程池，并返回携带请求 ID 的统一响应。
 
-项目用于系统编程与分布式通信的工程实践，目前支持同步调用、异步回调、同连接多请求在途，以及多种协议和请求错误处理。生产使用前仍需完善超时、取消、安全和运行治理能力，具体见[当前边界](#当前边界)。
+**项目状态：** 当前版本面向开发验证和单机/双实例实验，支持同步调用、异步回调、同连接多请求在途及协议错误处理；尚未达到生产就绪标准。已知限制见[当前边界](#当前边界)。
 
 ## 核心能力
 
@@ -29,6 +29,7 @@
 | 连接管理 | 按端点复用 TCP 连接，支持预热；空闲连接使用 MPMC 队列，桶管理仍使用互斥锁 |
 | 帧处理 | 长度前缀协议，处理粘包和半包；单请求错误回复后继续处理后续缓冲帧 |
 | 异常反馈 | 统一响应信封、请求 ID 保留、坏连接清理及受影响异步请求失败回调 |
+| 备用节点 | 同步路径在发送前遇到特定建连故障时，最多尝试一个备用实例；不重放已发送请求 |
 | 工具链 | CMake 静态库及示例程序，提供本地 Docker Compose 演示配置 |
 
 ## 系统架构
@@ -112,9 +113,11 @@ ZooKeeper 服务端需另行启动；安装 C 客户端开发库不会启动 Zoo
 在仓库根目录执行：
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j"$(nproc)"
 ```
+
+当前 CMake 将 Release 编译参数显式设为 `-O2`，未保留默认的 `-DNDEBUG`。调试时建议使用独立目录：`cmake -S . -B build-debug -DCMAKE_BUILD_TYPE=Debug`，避免混用构建产物。
 
 检查 `test.conf`，确认服务地址可被客户端访问，ZooKeeper 已就绪：
 
@@ -169,14 +172,27 @@ Compose 使用 `test.docker.conf` 和固定子网 `172.30.0.0/24`。如与本机
 
 ## 验证与性能
 
-仓库内可直接运行的检查：
+### 自动化与集成测试
+
+以下目标由 CMake 构建。当前未注册 CTest 测试集，因此通过直接运行对应程序执行检查：
 
 ```bash
+cmake --build build --target controller_test config_test hash_alternative_test pool_borrow_test cluster_test_server cluster_test_client -j"$(nproc)"
 ./build/controller_test
+./build/hash_alternative_test
+./build/pool_borrow_test
 ./build/config_test -i ./test.conf
 ```
 
-`controller_test` 验证控制器状态与重置；`config_test` 输出配置读取结果。当前未注册 CTest 测试集。
+| 测试目标 | 验证范围 |
+| --- | --- |
+| `controller_test` | 控制器状态和重置 |
+| `hash_alternative_test` | 一致性哈希备用节点选择边界 |
+| `pool_borrow_test` | 连接池借用失败后的状态恢复 |
+| `cluster_test_server` / `cluster_test_client` | 双实例请求分布、节点下线及恢复期间的路由行为 |
+| `config_test` | 配置文件读取结果 |
+
+双节点测试需要 ZooKeeper 和两个独立服务实例，且通过同步调用验证；准备步骤、操作流程和判定条件见[双节点集成测试指南](test/cluster/README.md)。这些集成测试尚未作为 CI 自动化结果报告。
 
 以下为开发过程中手动执行的回归结果，并非 CI 自动测试报告：
 
@@ -188,7 +204,9 @@ Compose 使用 `test.docker.conf` 和固定子网 `172.30.0.0/24`。如与本机
 | 超大响应故障注入 | 临时降低大小上限，观察到 `RESPONSE_TOO_LARGE`；恢复上限后正常调用通过 |
 | 服务端断连 | 观察到客户端读取失败及服务发现节点变更，用于检查连接异常处理 |
 
-最新同步实测：**6.6123 秒 / 100,000 次，约 15,123 QPS**。条件为 Ubuntu VMware 虚拟机、单服务实例、100 个客户端线程、连接预热及约 5ms 模拟业务等待；沿用此前 Debug 构建流程，未单独保存完整硬件、负载与构建元数据。
+一组手动同步基准结果：**6.6123 秒 / 100,000 次，约 15,123 QPS**。条件为 Ubuntu VMware 虚拟机、单服务实例、100 个客户端线程、连接预热及约 5ms 模拟业务等待；使用 Debug 构建，完整硬件和系统负载元数据未单独保存。该数据仅作开发观测，不是可复现的性能承诺。
+
+2026-10-18 同环境后续观测：单实例 Release（实际 `-O2`）五轮平均约 **16,619 QPS**；双实例的一次示例客户端运行达到 **17,307.5 QPS**，100,000 次成功、0 次失败。双实例数据是客户端合计吞吐，不代表单节点能力或线性扩容，也不替代专用分布与故障测试结果。
 
 QPS 来自同步压测，不代表异步吞吐量，也不构成跨环境性能保证。此前约 6.7K QPS 与当前约 15K QPS 的差异尚未通过受控对照定位原因。单次批量 socket 写入也不保证服务端一次读取全部请求，混合请求验证仍需补充确定性缓冲区测试。
 
@@ -205,7 +223,8 @@ QPS 来自同步压测，不代表异步吞吐量，也不构成跨环境性能�
 │   ├── rpc_connect_pool.cc   # 连接借用、归还与预热
 │   └── rpc_header.proto      # 框架请求头与响应信封
 ├── example/                  # 登录服务、客户端与配置检查
-├── test/                     # 控制器测试
+├── test/                     # 单元式检查及集成测试
+│   └── cluster/              # 双节点分布与下线/恢复实验
 ├── third_party/muduo/        # muduo 源码
 ├── CMakeLists.txt
 ├── Dockerfile
@@ -218,7 +237,7 @@ QPS 来自同步压测，不代表异步吞吐量，也不构成跨环境性能�
 
 ## 当前边界
 
-- **调用控制**：尚未实现框架级请求 deadline、取消、自动重试或幂等保障；示例中的等待超时不等于取消在途 RPC。
+- **调用控制**：尚未实现框架级请求 deadline、取消、已发送请求自动重试或幂等保障。同步路径仅对发送前的特定建连故障尝试一次备用节点；异步路径不支持该重选。示例中的等待超时不等于取消在途 RPC。
 - **并发与生命周期**：每条异步连接使用一个读取线程；回调应简短且不抛出异常，避免阻塞读取。响应对象和控制器必须存活至回调完成；不支持回调中销毁自身 Channel，或析构与新调用并发进行。
 - **资源回收**：断连状态保留到 Channel 析构并 `join`；频繁重连的长期资源增长仍需完善。连接代际隔离和故障竞争路径需要进一步验证。
 - **服务治理与安全**：当前连接路径使用 IPv4；TLS、鉴权、限流、背压、健康检查和完整的会话过期恢复尚未完善。
