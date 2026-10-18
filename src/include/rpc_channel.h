@@ -18,6 +18,13 @@
 
 class RpcChannel:public google::protobuf::RpcChannel{
 public:
+	struct SyncFailoverStats{
+		std::uint64_t attempted;
+		std::uint64_t connected;
+		std::uint64_t completed;
+	};
+	static SyncFailoverStats GetSyncFailoverStats();
+
 	RpcChannel(bool connect_now=false);
 
 	~RpcChannel()override;

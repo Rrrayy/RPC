@@ -53,6 +53,15 @@ std::string ServiceDiscovery::GetTargetNode(const std::string &service_name, con
     }
 }
 
+std::string ServiceDiscovery::GetAlternativeNode(const std::string& service_name,
+	const std::string& key,const std::string& excluded_node){
+	// Only consult the current snapshot; do not hammer ZooKeeper on connection failure.
+	std::shared_lock<std::shared_timed_mutex> lock(m_rw_mtx);
+	const auto iter=m_chash_map.find(service_name);
+	if(iter==m_chash_map.end()){return "";}
+	return iter->second->GetTargetNode(key,excluded_node);
+}
+
 void ServiceDiscovery::WatcherCallback(zhandle_t *zh, int type, int state, const char *path, void *watcherCtx)
 {
     if (type == ZOO_CHILD_EVENT)

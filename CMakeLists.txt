@@ -39,6 +39,11 @@ target_link_libraries(config_test rpc_core)
 add_executable(controller_test test/controller_test.cpp)
 target_link_libraries(controller_test rpc_core)
 
+add_executable(hash_alternative_test test/hash_alternative_test.cpp)
+target_link_libraries(hash_alternative_test rpc_core)
+add_executable(pool_borrow_test test/pool_borrow_test.cpp)
+target_link_libraries(pool_borrow_test rpc_core)
+
 # RPC 服务端
 add_executable(server example/callee/server.cc example/user.pb.cc)
 target_link_libraries(server rpc_core)
@@ -46,3 +51,9 @@ target_link_libraries(server rpc_core)
 # RPC 客户端
 add_executable(client example/caller/client.cc example/user.pb.cc)
 target_link_libraries(client rpc_core)
+
+# Isolated cluster experiments; leave the original benchmark unchanged.
+add_executable(cluster_test_server test/cluster/server.cc example/user.pb.cc)
+target_link_libraries(cluster_test_server rpc_core)
+add_executable(cluster_test_client test/cluster/client.cc example/user.pb.cc)
+target_link_libraries(cluster_test_client rpc_core)

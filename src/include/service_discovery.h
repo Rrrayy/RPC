@@ -16,6 +16,8 @@ public:
     static ServiceDiscovery &GetInstance();
     void Init();
     std::string GetTargetNode(const std::string &service_name, const std::string &key);
+	std::string GetAlternativeNode(const std::string& service_name,const std::string& key,
+		const std::string& excluded_node);
 
 private:
     ServiceDiscovery() = default;

@@ -1,7 +1,33 @@
 #include "rpc_connect_pool.h"
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
+#include <cerrno>
+#include <sys/socket.h>
+#include <unistd.h>
 #include "rpc_logger.h"
+
+bool BorrowFailure::can_failover()const{
+	// Resource exhaustion is not evidence that another service endpoint is healthy.
+	return error==BorrowError::connect_failed&&
+		(system_error==ECONNREFUSED||system_error==ETIMEDOUT||
+		 system_error==EHOSTUNREACH||system_error==ENETUNREACH||system_error==ECONNRESET);
+}
+
+std::string BorrowFailure::describe()const{
+	const char* reason="none";
+	switch(error){
+		case BorrowError::pool_full:reason="pool_full";break;
+		case BorrowError::socket_failed:reason="socket_failed";break;
+		case BorrowError::connect_failed:reason="connect_failed";break;
+		case BorrowError::none:break;
+	}
+	return std::string(reason)+" errno="+std::to_string(system_error);
+}
+
+std::map<std::string,std::uint64_t> RpcConnectPool::GetFailureCounts(){
+	std::lock_guard<std::mutex> lock(m_global_mtx);
+	return m_failures;
+}
 
 // 假设每个 IP:Port 最多建立 1024 个长连接（必须是 2 的幂）
 static const int MAX_CONN_SIZE = 1024;
@@ -77,8 +103,16 @@ void RpcConnectPool::WarmUp(const std::string &ip, uint16_t port, int count) {
     LOG(INFO) << "[ConnectPool] WarmUp complete: " << success_count << " connections ready for " << key;
 }
 
-int RpcConnectPool::BorrowConnection(const std::string &ip, uint16_t port) {
+int RpcConnectPool::BorrowConnection(const std::string &ip,uint16_t port,BorrowFailure* failure) {
     std::string key = ip + ":" + std::to_string(port);
+	if(failure!=nullptr){*failure=BorrowFailure{};}
+	auto fail=[&](BorrowError error,int system_error){
+		const BorrowFailure result{error,system_error};
+		if(failure!=nullptr){*failure=result;}
+		std::lock_guard<std::mutex> lock(m_global_mtx);
+		++m_failures[key+" "+result.describe()];
+		return -1;
+	};
 
     ConnectionBucket *bucket = nullptr;
     {
@@ -102,6 +136,11 @@ int RpcConnectPool::BorrowConnection(const std::string &ip, uint16_t port) {
     if (bucket->active_count.load(std::memory_order_relaxed) < m_max_conn_per_node) {
         if (bucket->active_count.fetch_add(1) < m_max_conn_per_node) {
             fd = socket(AF_INET, SOCK_STREAM, 0);
+			if(fd==-1){
+				const int system_error=errno;
+				bucket->active_count.fetch_sub(1);
+				return fail(BorrowError::socket_failed,system_error);
+			}
             int opt = 1;
             setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
 
@@ -113,15 +152,17 @@ int RpcConnectPool::BorrowConnection(const std::string &ip, uint16_t port) {
             if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
                 return fd;
             } else {
+				// Capture errno before close or any bookkeeping can overwrite it.
+				const int system_error=errno;
                 close(fd);
                 bucket->active_count.fetch_sub(1);
-                return -1;
+                return fail(BorrowError::connect_failed,system_error);
             }
         } else {
             bucket->active_count.fetch_sub(1);
         }
     }
-    return -1; 
+    return fail(BorrowError::pool_full,0);
 }
 
 void RpcConnectPool::ReturnConnection(const std::string &ip, uint16_t port, int fd, bool is_bad) {

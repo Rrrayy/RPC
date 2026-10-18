@@ -6,7 +6,19 @@
 #include<atomic>
 #include<mutex>
 #include<memory>
+#include<cstdint>
+#include<cstddef>
+#include<map>
 #include"LockFreeQueue.h"
+
+enum class BorrowError{none,pool_full,socket_failed,connect_failed};
+
+struct BorrowFailure{
+	BorrowError error=BorrowError::none;
+	int system_error=0;
+	bool can_failover()const;
+	std::string describe()const;
+};
 
 struct ConnectionBucket
 {
@@ -23,7 +35,8 @@ class RpcConnectPool{
 public:
     static RpcConnectPool &GetInstance();
 
-    int BorrowConnection(const std::string &ip ,uint16_t port);
+    int BorrowConnection(const std::string &ip,uint16_t port,BorrowFailure* failure=nullptr);
+    std::map<std::string,std::uint64_t> GetFailureCounts();
     void ReturnConnection(const std::string &ip , uint16_t port ,int fd ,bool is_bad = false);
     void WarmUp(const std::string &ip , uint16_t port ,int count);
 
@@ -32,7 +45,8 @@ private:
     ~RpcConnectPool();
     int m_max_conn_per_node;
     std::unordered_map<std::string, ConnectionBucket *> m_pools;
-    std::mutex m_global_mtx; // 仅用于创建新 Bucket 时加锁
+    std::mutex m_global_mtx; // Protect bucket lookup/creation and failure snapshots.
+	std::map<std::string,std::uint64_t> m_failures;
 };
 
 #endif

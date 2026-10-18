@@ -333,7 +333,7 @@ void ConsistentHash::RemoveNode(const std::string &node)
     m_node_counts.erase(node);
 }
 
-std::string ConsistentHash::GetTargetNode(const std::string &key)
+std::string ConsistentHash::GetTargetNode(const std::string &key,const std::string& excluded_node)
 {
     std::string node;
     std::shared_ptr<std::atomic<long long>> counter_ptr;
@@ -348,6 +348,14 @@ std::string ConsistentHash::GetTargetNode(const std::string &key)
         auto it = std::lower_bound(m_keys.begin(), m_keys.end(), h);
         if (it == m_keys.end())
             it = m_keys.begin();
+		// Skip every virtual node belonging to the failed endpoint without editing the ring.
+		if(!excluded_node.empty()){
+			const auto start=it;
+			while(m_ring.at(*it)==excluded_node){
+				if(++it==m_keys.end()){it=m_keys.begin();}
+				if(it==start){return "";}
+			}
+		}
 
         node = m_ring[*it];
         counter_ptr = m_node_counts[node]; // 拿出原子指针

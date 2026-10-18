@@ -37,7 +37,7 @@ public:
     void RemoveNode(const std::string &node);
 
     // 根据 Key 获取节点
-    std::string GetTargetNode(const std::string &key);
+    std::string GetTargetNode(const std::string &key,const std::string& excluded_node="");
 
     void UpdateNodes(const std::vector<std::string> &nodes);
     // 获取统计信息
