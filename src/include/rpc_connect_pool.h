@@ -5,6 +5,8 @@
 #include<unordered_map>
 #include<atomic>
 #include<mutex>
+#include<chrono>
+#include<condition_variable>
 #include<memory>
 #include<cstdint>
 #include<cstddef>
@@ -35,7 +37,7 @@ class RpcConnectPool{
 public:
     static RpcConnectPool &GetInstance();
 
-    int BorrowConnection(const std::string &ip,uint16_t port,BorrowFailure* failure=nullptr);
+    int BorrowConnection(const std::string &ip,uint16_t port,BorrowFailure* failure=nullptr,std::chrono::milliseconds wait_timeout=std::chrono::milliseconds(50));
     std::map<std::string,std::uint64_t> GetFailureCounts();
     void ReturnConnection(const std::string &ip , uint16_t port ,int fd ,bool is_bad = false);
     void WarmUp(const std::string &ip , uint16_t port ,int count);
@@ -47,6 +49,8 @@ private:
     std::unordered_map<std::string, ConnectionBucket *> m_pools;
     std::mutex m_global_mtx; // Protect bucket lookup/creation and failure snapshots.
 	std::map<std::string,std::uint64_t> m_failures;
+	std::condition_variable m_connection_returned_cv;
+	std::uint64_t m_pool_change_version=0;
 };
 
 #endif

@@ -103,90 +103,148 @@ void RpcConnectPool::WarmUp(const std::string &ip, uint16_t port, int count) {
     LOG(INFO) << "[ConnectPool] WarmUp complete: " << success_count << " connections ready for " << key;
 }
 
-int RpcConnectPool::BorrowConnection(const std::string &ip,uint16_t port,BorrowFailure* failure) {
-    std::string key = ip + ":" + std::to_string(port);
-	if(failure!=nullptr){*failure=BorrowFailure{};}
+int RpcConnectPool::BorrowConnection(const std::string& ip,uint16_t port,BorrowFailure* failure,std::chrono::milliseconds wait_timeout){
+	const std::string key=ip+":"+std::to_string(port);
+
+	if(failure!=nullptr){
+		*failure=BorrowFailure{};
+	}
+
 	auto fail=[&](BorrowError error,int system_error){
 		const BorrowFailure result{error,system_error};
-		if(failure!=nullptr){*failure=result;}
+
+		if(failure!=nullptr){
+			*failure=result;
+		}
+
 		std::lock_guard<std::mutex> lock(m_global_mtx);
 		++m_failures[key+" "+result.describe()];
 		return -1;
 	};
 
-    ConnectionBucket *bucket = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(m_global_mtx);
-        auto it = m_pools.find(key);
-        if (it == m_pools.end()) {
-            bucket = new ConnectionBucket(MAX_CONN_SIZE);
-            m_pools[key] = bucket;
-        } else {
-            bucket = it->second;
-        }
-    }
+	ConnectionBucket* bucket=nullptr;
 
-    int fd = -1;
-    // 优先从无锁队列获取（WarmUp 过的连接会在这里被直接拿到）
-    if (bucket->free_fds->pop(fd)) {
-        return fd;
-    }
+	{
+		std::lock_guard<std::mutex> lock(m_global_mtx);
+		auto iter=m_pools.find(key);
 
-    // 队列为空时才尝试动态创建
-    if (bucket->active_count.load(std::memory_order_relaxed) < m_max_conn_per_node) {
-        if (bucket->active_count.fetch_add(1) < m_max_conn_per_node) {
-            fd = socket(AF_INET, SOCK_STREAM, 0);
+		if(iter==m_pools.end()){
+			bucket=new ConnectionBucket(MAX_CONN_SIZE);
+			m_pools[key]=bucket;
+		}else{
+			bucket=iter->second;
+		}
+	}
+
+	const auto deadline=std::chrono::steady_clock::now()+wait_timeout;
+
+	while(true){
+		std::unique_lock<std::mutex> lock(m_global_mtx);
+
+		int fd=-1;
+
+		if(bucket->free_fds->pop(fd)){
+			return fd;
+		}
+
+		if(bucket->active_count.load(std::memory_order_relaxed)<m_max_conn_per_node){
+			bucket->active_count.fetch_add(1,std::memory_order_relaxed);
+			lock.unlock();
+
+			fd=socket(AF_INET,SOCK_STREAM,0);
+
 			if(fd==-1){
 				const int system_error=errno;
-				bucket->active_count.fetch_sub(1);
+
+				{
+					std::lock_guard<std::mutex> state_lock(m_global_mtx);
+					bucket->active_count.fetch_sub(1,std::memory_order_relaxed);
+					++m_pool_change_version;
+				}
+
+				m_connection_returned_cv.notify_all();
 				return fail(BorrowError::socket_failed,system_error);
 			}
-            int opt = 1;
-            setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
 
-            struct sockaddr_in addr;
-            addr.sin_family = AF_INET;
-            addr.sin_port = htons(port);
-            addr.sin_addr.s_addr = inet_addr(ip.c_str());
+			int opt=1;
+			setsockopt(fd,IPPROTO_TCP,TCP_NODELAY,&opt,sizeof(opt));
 
-            if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
-                return fd;
-            } else {
-				// Capture errno before close or any bookkeeping can overwrite it.
-				const int system_error=errno;
-                close(fd);
-                bucket->active_count.fetch_sub(1);
-                return fail(BorrowError::connect_failed,system_error);
-            }
-        } else {
-            bucket->active_count.fetch_sub(1);
-        }
-    }
-    return fail(BorrowError::pool_full,0);
+			struct sockaddr_in address{};
+			address.sin_family=AF_INET;
+			address.sin_port=htons(port);
+			address.sin_addr.s_addr=inet_addr(ip.c_str());
+
+			if(connect(fd,reinterpret_cast<struct sockaddr*>(&address),sizeof(address))==0){
+				return fd;
+			}
+
+			const int system_error=errno;
+			close(fd);
+
+			{
+				std::lock_guard<std::mutex> state_lock(m_global_mtx);
+				bucket->active_count.fetch_sub(1,std::memory_order_relaxed);
+				++m_pool_change_version;
+			}
+
+			m_connection_returned_cv.notify_all();
+			return fail(BorrowError::connect_failed,system_error);
+		}
+
+		const std::uint64_t observed_version=m_pool_change_version;
+		const auto wait_result=m_connection_returned_cv.wait_until(lock,deadline,
+			[&]{
+				return m_pool_change_version!=observed_version;
+			}
+		);
+
+		if(!wait_result){
+			if(bucket->free_fds->pop(fd)){
+				return fd;
+			}
+
+			lock.unlock();
+			return fail(BorrowError::pool_full,0);
+		}
+	}
 }
 
-void RpcConnectPool::ReturnConnection(const std::string &ip, uint16_t port, int fd, bool is_bad) {
-    std::string key = ip + ":" + std::to_string(port);
-    
-    ConnectionBucket *bucket = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(m_global_mtx);
-        auto it = m_pools.find(key);
-        if (it != m_pools.end()) bucket = it->second;
-    }
+void RpcConnectPool::ReturnConnection(const std::string& ip,uint16_t port,int fd,bool is_bad){
+	const std::string key=ip+":"+std::to_string(port);
+	bool close_connection=is_bad;
+	bool notify_waiters=false;
 
-    if (!bucket) {
-        close(fd);
-        return;
-    }
+	{
+		std::lock_guard<std::mutex> lock(m_global_mtx);
+		auto iter=m_pools.find(key);
 
-    if (is_bad) {
-        close(fd);
-        bucket->active_count.fetch_sub(1);
-    } else {
-        if (!bucket->free_fds->push(fd)) {
-            close(fd);
-            bucket->active_count.fetch_sub(1);
-        }
-    }
+		if(iter==m_pools.end()){
+			close_connection=true;
+		}else{
+			ConnectionBucket* bucket=iter->second;
+
+			if(is_bad){
+				bucket->active_count.fetch_sub(1,std::memory_order_relaxed);
+				notify_waiters=true;
+			}else if(!bucket->free_fds->push(fd)){
+				bucket->active_count.fetch_sub(1,std::memory_order_relaxed);
+				close_connection=true;
+				notify_waiters=true;
+			}else{
+				notify_waiters=true;
+			}
+
+			if(notify_waiters){
+				++m_pool_change_version;
+			}
+		}
+	}
+
+	if(close_connection){
+		close(fd);
+	}
+
+	if(notify_waiters){
+		m_connection_returned_cv.notify_all();
+	}
 }
